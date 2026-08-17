@@ -1,0 +1,7 @@
+/.claude
+
+/SequenceBoard.jpg
+
+node_modules/
+.env
+.env.*

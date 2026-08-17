@@ -1,0 +1,756 @@
+/* ===========================================================================
+   styles.css — Minimalist, mobile-first, dark card-table aesthetic.
+   One accent only (gold). Three type roles: Playfair (display), JetBrains Mono
+   (labels/codes/buttons), Inter (body). Teams colour themselves via an inline
+   --team / --team-dim pair set from rules.js TEAM_THEMES.
+
+   The board is the one deliberately LIGHT surface: card faces are ivory on dark
+   felt, exactly like the physical board, because a rank has to be legible in a
+   32px cell on a phone.
+   =========================================================================== */
+
+:root {
+  --bg:        #07130E;
+  --bg-glow:   #0D2A1D;
+  --surface:   #0C1A14;
+  --surface-2: #10251F;
+  --border:      rgba(242, 193, 78, 0.22);
+  --border-soft: rgba(255, 255, 255, 0.07);
+  --accent:     #F2C14E;
+  --accent-ink: #1A1206;
+  --accent-dim: rgba(242, 193, 78, 0.12);
+  --text:      #F1EEE4;
+  --muted:     #96A69B;
+  --warn:      #FF8A6B;
+  --warn-dim:  rgba(255, 138, 107, 0.14);
+  /* --warn is tuned for the dark felt; on ivory card stock it reads at 1.5:1.
+     This is the same warning hue darkened to clear 4.5:1 against a card. */
+  --warn-ink:  #9A3412;
+
+  /* Board surface — ivory card stock. */
+  --card:      #EDE6D6;
+  --card-2:    #DCD3BF;
+  --card-ink:  #23282C;
+  --card-red:  #B03A2E;
+
+  --radius:    14px;
+  --maxw:      640px;
+
+  /* Team colour, overridden per element via inline style. */
+  --team:      var(--accent);
+  --team-dim:  var(--accent-dim);
+
+  --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --serif: 'Playfair Display', Georgia, serif;
+  --sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  /* Felt-green glow toward top-centre, fading to the dark table edge. */
+  background:
+    radial-gradient(120% 80% at 50% -10%, var(--bg-glow) 0%, var(--bg) 55%) fixed;
+}
+
+.app-root { min-height: 100dvh; }
+
+.shell {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: max(28px, env(safe-area-inset-top)) 20px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  animation: fade 0.35s ease;
+}
+/* Set by main.js when a render replaces a screen with the SAME screen, i.e. a
+   state update rather than a transition. Fading the whole page in every time
+   anyone took a turn made the board flicker. */
+.app-root.rerender .shell { animation: none; }
+
+@keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* --- Wordmark ------------------------------------------------------------ */
+.wordmark {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  text-transform: uppercase;
+}
+.wordmark-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
+.wordmark-text { flex: 0 0 auto; }
+.help-btn {
+  margin-left: auto;
+  width: 30px; height: 30px;
+  flex: none;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  font-family: var(--serif);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.help-btn:hover { background: var(--accent-dim); border-color: var(--accent); }
+.help-btn.close { font-family: var(--sans); font-size: 22px; }
+
+/* --- Hero / headlines ---------------------------------------------------- */
+.hero {
+  font-family: var(--serif);
+  font-weight: 700;
+  font-size: clamp(50px, 15vw, 88px);
+  line-height: 0.92;
+  letter-spacing: -0.015em;
+  margin: 4px 0 0;
+}
+.hero-sm { font-size: clamp(38px, 11vw, 58px); }
+
+.tagline {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--muted);
+  margin: 0;
+  max-width: 46ch;
+}
+.accent { color: var(--accent); }
+.muted { color: var(--muted); }
+.fine { font-size: 13px; color: var(--muted); margin: 0; line-height: 1.5; }
+.error-text { color: var(--warn); font-size: 14px; margin: 0; }
+
+/* --- Fields -------------------------------------------------------------- */
+.field-group { display: flex; flex-direction: column; gap: 12px; }
+.field {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 16px;
+  padding: 15px 16px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.field:focus { border-color: var(--accent); }
+.field::placeholder { color: #5b6a60; }
+.field-code {
+  font-family: var(--mono);
+  font-size: 28px;
+  letter-spacing: 0.3em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+/* --- Buttons ------------------------------------------------------------- */
+.btn-row { display: flex; flex-wrap: wrap; gap: 12px; }
+.btn {
+  flex: 1 1 auto;
+  min-height: 52px;
+  min-width: 140px;
+  padding: 0 22px;
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: transform 0.08s ease, background 0.15s, opacity 0.15s;
+  border: 1px solid transparent;
+}
+.btn:active { transform: translateY(1px) scale(0.995); }
+.btn-primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn-primary:hover { background: #f8d276; }
+.btn-secondary { background: transparent; color: var(--accent); border-color: var(--border); }
+.btn-secondary:hover { background: var(--accent-dim); }
+.btn-ghost { background: transparent; color: var(--muted); border-color: var(--border-soft); flex: 0 1 auto; min-width: 0; }
+.btn-ghost:hover { color: var(--text); border-color: var(--border); }
+.btn-danger { background: var(--warn-dim); color: var(--warn); border-color: var(--warn); }
+.btn-danger:hover { background: rgba(255, 138, 107, 0.24); }
+.btn-disabled, .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-disabled:active { transform: none; }
+.link-btn {
+  align-self: flex-start;
+  background: none; border: none;
+  color: var(--accent);
+  font-family: var(--mono); font-size: 13px; letter-spacing: 0.04em;
+  padding: 4px 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;
+}
+.link-btn:hover { color: #f8d276; }
+
+/* --- Labels -------------------------------------------------------------- */
+.section-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+/* --- Room code card ------------------------------------------------------ */
+.code-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 22px;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+.code-card:hover { border-color: var(--accent); background: var(--surface-2); }
+.code-label { font-family: var(--mono); font-size: 11px; letter-spacing: 0.2em; color: var(--muted); }
+.code-value {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: clamp(48px, 16vw, 72px);
+  letter-spacing: 0.12em;
+  color: var(--accent);
+  margin: 6px 0 4px;
+  text-shadow: 0 0 24px rgba(242, 193, 78, 0.3);
+}
+.code-hint { font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; color: var(--muted); }
+
+/* --- Seat list (lobby) --------------------------------------------------- */
+/* Teams are derived from seat order, so one ordered list is the whole picture:
+   position, name and the team that position puts you on. */
+.seat-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; counter-reset: seat; }
+.seat {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--team);
+  border-radius: 12px;
+  padding: 11px 13px;
+  flex-wrap: wrap;
+}
+.seat.is-me { background: var(--surface-2); border-color: var(--border); }
+.seat.is-off { opacity: 0.55; border-left-style: dashed; }
+.seat-num {
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+  color: var(--muted); min-width: 1.2em; flex: none;
+}
+.seat-name { flex: 1 1 auto; min-width: 4em; font-size: 15px; display: flex; align-items: center; gap: 7px; }
+.seat.is-me .seat-name { font-weight: 600; }
+.seat-team {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--team); flex: none;
+}
+.seat-moves { display: flex; gap: 5px; flex: none; margin-left: auto; }
+.tm-move {
+  font-family: var(--mono); font-size: 12px; line-height: 1;
+  padding: 7px 9px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.tm-move:not(:disabled):hover { color: var(--accent); border-color: var(--accent); }
+/* Already first/last: visibly inert, and the click handler is omitted in ui.js
+   too, so a stray tap can never fire an intent. */
+.tm-move:disabled { opacity: 0.28; cursor: default; }
+
+.team-dot {
+  position: relative;
+  width: 12px; height: 12px; border-radius: 50%; flex: none;
+  background: var(--team);
+  box-shadow: 0 0 8px var(--team);
+}
+.team-dot.neutral { background: var(--muted); box-shadow: none; opacity: 0.5; }
+.you-tag {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--accent-ink); background: var(--team); border-radius: 5px; padding: 2px 5px; flex: none;
+}
+.chip-note { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+
+/* --- Lobby summary ------------------------------------------------------ */
+.summary-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.summary-list li {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.summary-list strong { color: var(--text); font-weight: 600; }
+
+/* --- Config editor ------------------------------------------------------- */
+.config { display: flex; flex-direction: column; gap: 12px; }
+.stepper {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.stepper-label { font-size: 14px; }
+.stepper-ctrl { display: flex; align-items: center; gap: 10px; flex: none; }
+.step-btn {
+  width: 38px; height: 38px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  color: var(--accent);
+  font-family: var(--mono); font-size: 20px; font-weight: 700; line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, opacity 0.12s;
+}
+.step-btn:hover { border-color: var(--accent); }
+.step-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.stepper-val {
+  font-family: var(--mono); font-size: 16px; font-weight: 700;
+  min-width: 44px; text-align: center;
+}
+
+.segmented { display: flex; gap: 6px; flex: none; }
+.seg {
+  font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: 0.04em;
+  padding: 10px 13px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.seg:hover { color: var(--accent); border-color: var(--accent); }
+.seg.sel { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+.toggle {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.toggle.on { border-color: var(--border); }
+.toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.toggle-box {
+  width: 22px; height: 22px; border-radius: 6px; flex: none;
+  border: 1px solid var(--muted);
+  position: relative;
+  transition: background 0.15s, border-color 0.15s;
+}
+.toggle.on .toggle-box { background: var(--accent); border-color: var(--accent); }
+.toggle.on .toggle-box::after {
+  content: '✓'; position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--accent-ink); font-size: 14px; font-weight: 700;
+}
+.toggle-text { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.toggle-name { font-size: 14px; font-weight: 500; }
+.toggle-blurb { font-size: 12px; color: var(--muted); line-height: 1.4; }
+
+/* --- Turn banner -------------------------------------------------------- */
+.turn-banner {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-top: 3px solid var(--team);
+  border-radius: 16px;
+  padding: 16px 18px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.turn-banner.mine { background: var(--team-dim); border-color: var(--team); }
+.turn-eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: 0.2em; color: var(--muted); }
+.turn-name {
+  font-family: var(--serif); font-weight: 700;
+  font-size: clamp(28px, 8vw, 40px); line-height: 1.05;
+  color: var(--team);
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.turn-hint { margin: 6px 0 0; font-size: 14px; color: var(--muted); line-height: 1.45; }
+
+/* --- Scoreboard --------------------------------------------------------- */
+.scoreboard { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.score-row {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--team);
+  border-radius: 12px;
+  padding: 11px 13px;
+}
+.score-row.current { border-color: var(--team); background: var(--surface-2); }
+.score-team { display: flex; align-items: center; gap: 8px; flex: none; }
+.score-name { font-size: 15px; font-weight: 600; color: var(--team); }
+.score-detail {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* One pip per sequence needed to win, filled as they are completed — the whole
+   score of a Sequence game is "how many of the two do you have". */
+.seq-pips { display: flex; gap: 5px; flex: none; }
+.pip {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 1.5px solid var(--team);
+  opacity: 0.45;
+}
+.pip.on { background: var(--team); opacity: 1; box-shadow: 0 0 10px var(--team); }
+
+/* --- Board -------------------------------------------------------------- */
+.board-section { display: flex; flex-direction: column; gap: 10px; }
+.board-bar { display: flex; align-items: center; gap: 12px; }
+.deck-count { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-left: auto; }
+.board-zoom { align-self: auto; flex: none; }
+
+.board-wrap { width: 100%; }
+/* Zoomed: the board grows past the viewport and the wrapper scrolls, so a cell
+   is a comfortable tap target on a small phone. */
+.board-wrap.zoom { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.board-wrap.zoom .board { width: 190%; }
+
+.board {
+  container-type: inline-size;
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 10), 1fr);
+  gap: 2px;
+  padding: 5px;
+  background: #051009;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+}
+
+.cell {
+  position: relative;
+  aspect-ratio: 1;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  border-radius: 3px;
+  background: linear-gradient(170deg, var(--card), var(--card-2));
+  color: var(--card-ink);
+  cursor: default;
+  overflow: hidden;
+}
+/* Every cell stays a focusable button so the board can be walked with the arrow
+   keys; only the playable ones do anything. Nothing greys out — a space you can't
+   use is still a card you need to read. */
+.cell[aria-disabled="true"] { cursor: default; }
+.cell:not([aria-disabled="true"]) { cursor: pointer; }
+/* Pulled inside the cell — the global focus ring sits 2px OUTSIDE, which the 2px
+   grid gap and the zoom wrapper's overflow would both eat. An outline rather than
+   an inset box-shadow so it stacks with the target and sequence rings instead of
+   replacing them: a focused legal target keeps its gold glow. White inside a dark
+   frame, so it survives the ivory card stock and the dark corners alike. */
+.cell:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -1px;
+  border-color: #0B1D12;
+  z-index: 1;
+}
+.cell.corner {
+  background: linear-gradient(170deg, #23342a, #16241c);
+  color: var(--accent);
+  border-color: rgba(242, 193, 78, 0.35);
+}
+
+.card-face { display: flex; flex-direction: column; align-items: center; line-height: 1; }
+.card-face .rank {
+  font-family: var(--mono); font-weight: 700;
+  font-size: 11px; font-size: 3.4cqw;
+}
+.card-face .suit { font-size: 10px; font-size: 3.1cqw; margin-top: 1px; }
+.card-face.red { color: var(--card-red); }
+.free-mark { font-size: 13px; font-size: 4cqw; line-height: 1; }
+
+/* The chip covers the card but stops short of the cell edges, so the card stock
+   still frames it and a covered space stays identifiable at a glance. */
+.chip {
+  position: absolute;
+  inset: 12%;
+  border-radius: 50%;
+  background: var(--team);
+  border: 1.5px solid rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.35), 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+/* Only the chip that was just played drops in, and only on the render that
+   played it — .fresh-move comes from main.js. Animating every chip on every
+   rebuild made the whole board twitch each time anyone took a turn. */
+.app-root.fresh-move .cell.last .chip { animation: drop 0.18s ease-out; }
+
+/* Non-colour team markers. Green and red sit about 1.2:1 apart in luminance, so
+   hue alone leaves them indistinguishable to a red/green colour-blind player.
+   Team 1 is plain, team 2 gets a bar, team 3 a centre dot — and the scoreboard
+   dots carry the same marks, so the board always has a legend beside it. */
+.chip::after, .team-dot::after {
+  content: '';
+  position: absolute;
+  background: rgba(0, 0, 0, 0.55);
+}
+.chip[data-team="1"]::after, .team-dot[data-team="1"]::after { inset: 45% 18%; border-radius: 1px; }
+.chip[data-team="2"]::after, .team-dot[data-team="2"]::after { inset: 33%; border-radius: 50%; }
+@keyframes drop { from { transform: scale(1.5); opacity: 0.2; } to { transform: none; opacity: 1; } }
+.cell.taken .card-face { opacity: 0.4; }
+
+/* Legal targets for the selected card. Placement glows gold; removal glows warn
+   and carries an × so the two never look alike. */
+.cell.target {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--accent), 0 0 12px -2px var(--accent);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+.cell.target-remove {
+  border-color: var(--warn);
+  box-shadow: inset 0 0 0 2px var(--warn), 0 0 12px -2px var(--warn);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+.cell.target-remove::after {
+  content: '×';
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--sans); font-weight: 700;
+  font-size: 14px; font-size: 5cqw;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+@keyframes breathe { 50% { filter: brightness(1.18); } }
+
+/* A cell inside a completed sequence — its chip is locked and can never be
+   lifted by a one-eyed Jack. */
+.cell.in-seq { border-color: var(--team); box-shadow: inset 0 0 0 2px var(--team); }
+.lock-mark {
+  position: absolute; top: 0; right: 1px;
+  font-size: 7px; font-size: 2.4cqw;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  line-height: 1;
+}
+.cell.last::before {
+  content: '';
+  position: absolute; inset: 1px;
+  border: 1.5px dashed var(--accent);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+/* --- Hand dock ---------------------------------------------------------- */
+/* Sticks to the bottom of the viewport so your cards and the two turn actions
+   are always in reach while you scroll the board. */
+.hand-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  margin: 0 -20px;
+  padding: 10px 20px max(10px, env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 9px;
+  background: linear-gradient(to top, var(--bg) 55%, rgba(7, 19, 14, 0.85));
+  backdrop-filter: blur(6px);
+  border-top: 1px solid var(--border-soft);
+}
+
+.hand {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 0 4px;
+  -webkit-overflow-scrolling: touch;
+}
+.card {
+  flex: 0 0 auto;
+  position: relative;
+  width: 58px; height: 82px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  background: linear-gradient(170deg, var(--card), var(--card-2));
+  color: var(--card-ink);
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.15s, border-color 0.15s;
+}
+.card.red { color: var(--card-red); }
+.card-rank { font-family: var(--mono); font-weight: 700; font-size: 21px; line-height: 1; }
+.card-suit { font-size: 18px; line-height: 1; }
+/* Dimmed with a real ink colour rather than opacity: at 8px this text needs
+   4.5:1, and fading the near-black ink into the card left it at 3.5:1. */
+.card-tag {
+  position: absolute; bottom: 4px;
+  font-family: var(--mono); font-size: 8px; font-weight: 700; letter-spacing: 0.08em;
+  color: #4A4F53;
+}
+.card.selected {
+  transform: translateY(-6px);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent), 0 6px 18px -6px var(--accent);
+}
+/* Deadness is carried by the dashed border and the DEAD tag, NOT by fading the
+   rank: --card-red only clears 4.5:1 at full strength, so any dimming pushed red
+   cards under it — and you still have to read a dead card to decide about it. */
+.card.dead { border-style: dashed; border-color: var(--warn); }
+.card.dead .dead-tag { color: var(--warn-ink); }
+
+.action-row .btn { min-height: 46px; min-width: 120px; font-size: 12px; }
+
+/* --- Move log ----------------------------------------------------------- */
+.log-section { display: flex; flex-direction: column; gap: 8px; }
+.log-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.log-line {
+  display: flex; align-items: flex-start; gap: 9px;
+  font-size: 13px; line-height: 1.4;
+  color: var(--muted);
+}
+.log-line .team-dot { margin-top: 5px; }
+.log-line.latest { color: var(--text); }
+
+/* --- Host controls ------------------------------------------------------ */
+.danger-text { color: var(--warn); }
+.host-bar {
+  display: flex; flex-direction: column; gap: 10px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 16px;
+}
+.host-bar .btn { min-height: 46px; font-size: 12px; }
+
+/* --- Game over ---------------------------------------------------------- */
+.win-banner {
+  background: var(--team-dim);
+  border: 1px solid var(--team);
+  border-radius: 20px;
+  padding: 30px 24px;
+  text-align: center;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.win-banner.tie { background: var(--accent-dim); border-color: var(--accent); }
+.win-eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.2em; color: var(--muted); }
+.win-team { font-family: var(--serif); font-size: clamp(40px, 12vw, 64px); font-weight: 700; line-height: 1; color: var(--team); }
+.win-banner.tie .win-team { color: var(--accent); }
+.win-score { font-family: var(--mono); font-size: 14px; letter-spacing: 0.04em; color: var(--muted); margin-top: 4px; }
+
+/* --- Spinner ------------------------------------------------------------ */
+.spinner {
+  width: 28px; height: 28px; border-radius: 50%;
+  border: 3px solid var(--border-soft); border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+  margin: 4px 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner-sm { width: 18px; height: 18px; border-width: 2px; margin: 0; }
+
+/* Mid-game connection loss: overlays the live board rather than replacing it. */
+.reconnect-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: max(10px, env(safe-area-inset-top)) 16px 10px;
+  background: var(--warn-dim);
+  border-bottom: 1px solid var(--warn);
+  backdrop-filter: blur(6px);
+  color: var(--warn);
+  font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em;
+}
+.reconnect-banner .spinner { border-top-color: var(--warn); }
+
+/* Signalling trouble, which is a sentence not a status word — so it wraps, sits
+   left, and keeps the dismiss button pinned out of the text's way. */
+.net-banner {
+  justify-content: space-between; align-items: flex-start; gap: 12px;
+  text-align: left; line-height: 1.5;
+}
+.banner-close {
+  flex: none; width: 28px; height: 28px; padding: 0;
+  display: grid; place-items: center;
+  background: none; border: 1px solid var(--warn); border-radius: 8px;
+  color: var(--warn); font-size: 12px; cursor: pointer;
+}
+.banner-close:hover { background: rgba(255, 138, 107, 0.24); }
+
+/* --- Game discovery list (Join screen) --------------------------------- */
+.discovery-status { display: flex; align-items: center; gap: 10px; padding: 6px 2px; }
+.game-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.game-row {
+  width: 100%; min-height: 64px; display: flex; align-items: center; gap: 14px;
+  padding: 12px 16px; text-align: left; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+  color: inherit; transition: border-color 0.15s ease, background 0.15s ease;
+}
+.game-row:hover { border-color: var(--accent); background: var(--accent-dim); }
+.game-code {
+  font-family: var(--mono); font-size: 22px; font-weight: 700; letter-spacing: 0.12em;
+  color: var(--accent); flex: 0 0 auto;
+}
+.game-meta { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
+.game-host { font-size: 15px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game-sub { font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--muted); }
+.game-go { font-size: 18px; color: var(--accent); flex: 0 0 auto; }
+.game-row-busy { opacity: 0.55; cursor: not-allowed; }
+.game-row-busy:hover { border-color: var(--border); background: var(--surface); }
+.game-row-busy .game-code, .game-row-busy .game-go { color: var(--muted); }
+
+/* --- Rules overlay ------------------------------------------------------ */
+.rules-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(3, 9, 6, 0.74);
+  backdrop-filter: blur(4px);
+  display: flex; align-items: flex-end; justify-content: center;
+  animation: fade 0.2s ease;
+}
+.rules-sheet {
+  width: 100%; max-width: var(--maxw);
+  max-height: 90dvh; overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px 20px 0 0;
+  padding: 22px 20px max(28px, env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 16px;
+  animation: rise 0.28s ease;
+}
+@keyframes rise { from { transform: translateY(24px); } to { transform: none; } }
+.rules-head { display: flex; align-items: center; justify-content: space-between; }
+.rules-head h2 { font-family: var(--serif); font-size: 30px; margin: 0; }
+.rule-rounds { display: flex; flex-direction: column; gap: 12px; }
+.rule-round { display: flex; gap: 14px; align-items: flex-start; }
+.rule-short {
+  font-family: var(--mono); font-size: 13px; font-weight: 700;
+  color: var(--accent); border: 1px solid var(--border); border-radius: 8px;
+  padding: 4px 8px; flex: none; white-space: nowrap;
+}
+.rule-name { font-weight: 600; font-size: 15px; }
+.rule-text { font-size: 13px; color: var(--muted); line-height: 1.45; margin: 2px 0 0; }
+.rule-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+.rule-list li { font-size: 14px; line-height: 1.5; color: var(--text); }
+
+/* --- Accessibility helpers --------------------------------------------- */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
+
+/* --- Roomier on real screens ------------------------------------------- */
+@media (min-width: 520px) {
+  .card { width: 66px; height: 94px; }
+  .card-rank { font-size: 24px; }
+  .card-suit { font-size: 20px; }
+  .board-wrap.zoom .board { width: 140%; }
+}
