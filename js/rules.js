@@ -130,6 +130,10 @@ export const DEFAULTS = Object.freeze({
   numTeams: 2,
   shuffleBoard: false,   // false = the classic retail board layout
   deadCardsPerTurn: 1,   // official allowance; 0 disables, higher is a house rule
+  // Purely presentational — it changes what the board points out, never what the
+  // engine accepts. On (the default) the spaces a selected card can go light up;
+  // off, players find their own matches the way they must at a physical table.
+  showTargets: true,
 });
 
 export const LIMITS = Object.freeze({
@@ -144,11 +148,24 @@ export function normalizeConfig(cfg = {}, playerCount = 0) {
   return {
     numTeams,
     shuffleBoard: !!c.shuffleBoard,
+    // Safe to coerce hard: the DEFAULTS spread above has already turned a missing
+    // key into true, so !! only ever sees a value the host actually set.
+    showTargets: !!c.showTargets,
     deadCardsPerTurn: clampInt(
       c.deadCardsPerTurn, LIMITS.deadCardsPerTurn.min, LIMITS.deadCardsPerTurn.max,
       DEFAULTS.deadCardsPerTurn
     ),
   };
+}
+
+/**
+ * Are the board highlights on? Read through this rather than off config directly:
+ * restore() rehydrates a saved snapshot with a plain Object.assign, so a game that
+ * was already in progress before this setting existed comes back with the key
+ * missing — and "missing" means highlights, because that was the only behaviour.
+ */
+export function highlightsOn(config) {
+  return !config || config.showTargets !== false;
 }
 
 /**

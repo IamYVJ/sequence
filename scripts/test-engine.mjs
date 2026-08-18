@@ -16,7 +16,7 @@ import {
   MAX_PLAYERS, SEATINGS, buildDeck, shuffle, legalTargets, isDeadCard,
   isOneEyedJack, isTwoEyedJack, isJack, newSequencesAt, normalizeConfig,
   validateStart, handSizeFor, sequencesToWinFor, allowedTeamCounts, cleanName,
-  describeSeating,
+  describeSeating, highlightsOn, DEFAULTS,
 } from '../js/rules.js';
 
 let passed = 0, failed = 0;
@@ -61,11 +61,11 @@ seed(1);
 // Harness helpers
 // ---------------------------------------------------------------------------
 
-function freshGame({ players = 4, numTeams = 2, deadCardsPerTurn = 1, shuffleBoard = false, start = true } = {}) {
+function freshGame({ players = 4, numTeams = 2, deadCardsPerTurn = 1, shuffleBoard = false, showTargets = true, start = true } = {}) {
   const eng = new GameEngine();
   eng.addPlayer('host', 'Host', { isHost: true });
   for (let i = 1; i < players; i++) eng.addPlayer('p' + i, 'Player' + i);
-  eng.setConfig({ numTeams, deadCardsPerTurn, shuffleBoard });
+  eng.setConfig({ numTeams, deadCardsPerTurn, shuffleBoard, showTargets });
   if (start) eng.startGame('host');
   return eng;
 }
@@ -227,11 +227,63 @@ section('Config normalisation');
   ok(normalizeConfig({ deadCardsPerTurn: -4 }, 4).deadCardsPerTurn === 0, 'dead-card limit clamps low');
   ok(normalizeConfig({ deadCardsPerTurn: 'x' }, 4).deadCardsPerTurn === 1, 'garbage falls back to the default');
   ok(normalizeConfig({ shuffleBoard: 'yes' }, 4).shuffleBoard === true, 'shuffleBoard coerces to boolean');
+
+  // showTargets is the one flag that defaults ON, so a missing key must not be
+  // read as "off" the way `!!undefined` would have it.
+  ok(normalizeConfig({}, 4).showTargets === true, 'highlights are on unless the host says otherwise');
+  ok(normalizeConfig({ showTargets: false }, 4).showTargets === false, 'the host can switch highlights off');
+  ok(normalizeConfig({ showTargets: 0 }, 4).showTargets === false, 'showTargets coerces to boolean');
+  ok(highlightsOn(normalizeConfig({}, 4)), 'highlightsOn agrees with the default');
+  ok(!highlightsOn(normalizeConfig({ showTargets: false }, 4)), 'highlightsOn agrees when off');
+  // restore() rehydrates a snapshot with Object.assign, so a game already in
+  // progress when this setting shipped comes back without the key at all. It has
+  // to read as "on" — the alternative silently changes how a live game behaves.
+  ok(highlightsOn({ numTeams: 2 }), 'a config from before the setting existed still shows highlights');
+  ok(highlightsOn(undefined), 'a missing config does not crash the board');
   ok(cleanName('  Ada \n Lovelace  ') === 'Ada Lovelace', 'names are trimmed and collapsed');
   ok(cleanName('x'.repeat(40)).length === 20, 'names are capped at 20 characters');
   ok(cleanName('') === '', 'an empty name stays empty');
   const bell = String.fromCharCode(7);
   ok(cleanName(`Ada${bell}Lovelace`) === 'AdaLovelace', 'control characters are stripped');
+}
+
+// ===========================================================================
+// "Presentational" is a claim about the engine, so it gets asserted against the
+// engine: two games dealt from the same seed, one with the highlights off, must
+// agree on every legal target and accept the same move. If they ever diverge the
+// setting has quietly become a rules change, and the host has no way to tell.
+section('Highlights off changes nothing the engine does');
+{
+  seed(77);
+  const on = freshGame({ players: 4 });
+  seed(77);
+  const off = freshGame({ players: 4, showTargets: false });
+
+  const actor = on.currentPlayer;
+  ok(off.currentPlayer.id === actor.id, 'the same seed seats the same player first');
+
+  const a = on.privateStateFor(actor.id);
+  const b = off.privateStateFor(actor.id);
+  ok(a.hand.map((c) => c.code).join() === b.hand.map((c) => c.code).join(), 'the same hand is dealt');
+  ok(a.hand.every((c, i) => c.targets.join() === b.hand[i].targets.join()),
+    'every card still reports the same legal targets');
+  ok(a.hand.every((c, i) => c.dead === b.hand[i].dead),
+    'dead cards are still marked — that is a rule, not a hint');
+  ok(a.canPass === b.canPass, 'pass is offered on the same terms');
+
+  // The move the board declined to point out still plays.
+  const card = b.hand.find((c) => c.targets.length);
+  ok(off.playCard(actor.id, card.id, card.targets[0]).ok, 'an unhighlighted legal move is accepted');
+
+  // It has to reach the joiners, not just the host who set it: a player whose
+  // board is highlighting spaces in a game the host set up not to is playing a
+  // different game from everyone else.
+  ok(off.publicState().config.showTargets === false, 'every player is told the highlights are off');
+  const back = new GameEngine();
+  back.restore(JSON.parse(JSON.stringify(off.serialize())));
+  ok(back.publicState().config.showTargets === false, 'the setting survives a host reload');
+  ok(!off.setConfig({ showTargets: true }).ok, 'it cannot be switched once the game is under way');
+  ok(DEFAULTS.showTargets === true, 'a host who changes nothing gets the highlights');
 }
 
 // ===========================================================================

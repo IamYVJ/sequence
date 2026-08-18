@@ -14,6 +14,7 @@ import {
   describePeerError, isFatalPeerError, peerIdForCode,
 } from './net.js';
 import { render } from './ui.js';
+import { highlightsOn } from './rules.js';
 import {
   generateRoomCode, normalizeCode, copyText, CODE_LENGTH,
   loadName, saveName, loadCode, saveCode,
@@ -695,9 +696,12 @@ const intents = {
     app.error = '';
     // Park the cursor on the first space this card can go. Without it a keyboard
     // player has to walk the arrow keys across a hundred cells looking for the
-    // highlights they can't see.
+    // highlights they can't see. Not when the host turned the highlights off: the
+    // cursor would then be the last thing on screen still naming a legal space,
+    // and it would name it to keyboard players only.
     const card = ((app.priv && app.priv.hand) || []).find((c) => c.id === app.selectedCardId);
-    if (card && card.targets && card.targets.length) app.cursor = card.targets[0];
+    if (highlightsOn(app.pub && app.pub.config)
+        && card && card.targets && card.targets.length) app.cursor = card.targets[0];
     draw();
   },
   playAt: (cell) => {

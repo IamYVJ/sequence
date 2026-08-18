@@ -38,6 +38,10 @@ Key rules the app enforces for you:
   check whether both spaces for a card in your hand are already gone. Selecting a
   one-eyed Jack reveals every chip it could lift for free, since that is the
   moment the hidden card decides the move.
+- Selecting a card **lights up the spaces it can go**. A host who wants the table
+  to read the board for itself can turn that off (see below); the rules don't
+  change, and a tap on the wrong space says why it was wrong instead of doing
+  nothing.
 - **Pass** is only offered when you genuinely have no legal move and no dead card
   to swap, so a hand of unplayable one-eyed Jacks can't deadlock the game.
 
@@ -60,9 +64,19 @@ Two teams race to **two** sequences; three teams race to **one**. Counts not in
 the table (5, 7, 11) can't split into equal teams and are rejected at the lobby.
 
 **Host-configurable before the game starts:** number of teams (when the player
-count allows a choice), whether to use the classic printed board or a freshly
+count allows a choice), whether the board **highlights the spaces** a selected
+card can go (default on), whether to use the classic printed board or a freshly
 **shuffled** one, and how many dead-card swaps are allowed per turn (default 1;
 set 0 to switch swapping off).
+
+Turning the highlights off is a house rule about what the app tells you, never
+about what it allows: the engine computes the same legal moves either way. What
+goes with the ring is everything else that was pointing at the answer — the
+one-eyed Jack's free reveal, the keyboard cursor jumping to the first legal
+space, and the screen reader's "press to play here" — because leaving any one of
+them in would just move the answer somewhere else, or hand it to some players and
+not others. Peeking under a chip stays, since it only shows what is printed on
+the board anyway.
 
 ## How it works
 
@@ -99,7 +113,9 @@ set 0 to switch swapping off).
   with a roving cursor — arrows move one space, Home/End run to the ends of a row,
   PageUp/PageDown to the ends of a column — and every space announces its
   coordinate, card, occupant, locked state and whether you can act there.
-  Selecting a card parks the cursor on its first legal space. Chips carry a shape
+  Selecting a card parks the cursor on its first legal space. Both of those last
+  two track the highlight setting rather than legality, so a table playing without
+  highlights is playing the same game on every device. Chips carry a shape
   as well as a colour — plain, a bar, a centre dot — and the scoreboard dots
   repeat the same marks, so the board has a legend beside it and hue is never the
   only signal. The rules sheet is a modal dialog that traps Tab, closes on Escape

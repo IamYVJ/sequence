@@ -15,7 +15,7 @@ import { el, clear } from './util.js';
 import { BOARD_SIZE, FREE, cellName } from './board.js';
 import {
   MAX_PLAYERS, SEATINGS, LIMITS,
-  teamTheme, allowedTeamCounts, describeSeating,
+  teamTheme, allowedTeamCounts, describeSeating, highlightsOn,
   rankLabel, suitGlyph, isRedSuit, cardLabel,
   isTwoEyedJack, isOneEyedJack, isJack,
 } from './rules.js';
@@ -346,6 +346,10 @@ function seatingSummary(pub) {
     el('li', {}, el('strong', {}, String(pub.handSize)), ' cards each'),
     el('li', {}, el('strong', {}, String(win)), ` sequence${win > 1 ? 's' : ''} to win`),
     el('li', {}, pub.config.shuffleBoard ? 'Shuffled board' : 'Classic board'),
+    // Only when it is off. Everyone who joins needs to know the board will not be
+    // pointing anything out before the first card is dealt, but a line saying the
+    // app behaves normally is a line nobody needs to read.
+    highlightsOn(pub.config) ? null : el('li', {}, 'No highlights — find your own matches'),
   );
 }
 
@@ -364,6 +368,9 @@ function configEditor(app, intents) {
       : el('div', { class: 'stepper' },
           el('span', { class: 'stepper-label' }, 'Teams'),
           el('span', { class: 'stepper-val' }, String(c.numTeams))),
+    toggleRow('Highlight matching spaces', c.showTargets,
+      () => intents.setConfig({ showTargets: !c.showTargets }),
+      'Lights up every space the card you picked could go. Switch it off to read the board yourself — what is legal does not change, and a wrong tap still says why it was wrong.'),
     toggleRow('Shuffle the board', c.shuffleBoard,
       () => intents.setConfig({ shuffleBoard: !c.shuffleBoard }),
       'Deals the same 96 cards into a fresh arrangement instead of the printed retail layout. Twin cards are kept apart, so the geometry still plays fair.'),
@@ -462,13 +469,26 @@ function turnBanner(app, intents) {
   if (!myTurn) {
     hint = current && !current.online
       ? 'They have dropped out — the host can skip the turn.'
-      : 'Tap a card to preview where it could go.';
+      // No preview to offer when the board is not marking anything, so don't
+      // promise one — the waiting player would tap a card and see nothing happen.
+      : highlightsOn(pub.config)
+        ? 'Tap a card to preview where it could go.'
+        : 'Work out your move — the board is not marking spaces this game.';
   } else if (!selected) {
     hint = 'Pick a card from your hand.';
   } else if (selected.targets.length === 0) {
     hint = isOneEyedJack(selected.code)
       ? 'No opponent chip can be removed right now — try another card.'
       : `${cardLabel(selected.code)} has no open space. Swap it as a dead card.`;
+  } else if (!highlightsOn(pub.config)) {
+    // Nothing is marked, so the hint has to describe the rule instead of pointing
+    // at the board. It can still say a move exists — the Swap and Pass buttons
+    // give that away anyway — just not where.
+    hint = isOneEyedJack(selected.code)
+      ? 'Lift an opponent chip that is not already in a sequence.'
+      : isTwoEyedJack(selected.code)
+        ? 'Wild — tap any open space on the board.'
+        : `Find a ${cardLabel(selected.code)} on the board and tap it.`;
   } else if (isOneEyedJack(selected.code)) {
     hint = 'Tap a marked chip to lift it off the board — their cards are showing.';
   } else {
@@ -545,6 +565,12 @@ function boardGrid(app, intents) {
   const selected = selectedCard(app);
   const targets = new Set(selected ? selected.targets : []);
   const removing = !!(selected && isOneEyedJack(selected.code));
+  // A house rule, and only ever about what the board admits to: `targets` still
+  // arrives from the engine and a legal tap still plays. Switching it off withdraws
+  // the ring, the one-eyed Jack's free reveal and the screen reader's "press to
+  // play here" together — leave any one of them in and the setting just moves the
+  // answer somewhere else instead of removing it.
+  const showTargets = highlightsOn(pub.config);
 
   // Cells inside a completed sequence, and which team owns that line. Locked
   // chips can't be lifted by a one-eyed Jack, so the marker is meaningful, not
@@ -559,20 +585,25 @@ function boardGrid(app, intents) {
     const chip = pub.chips[cell];
     const corner = code === FREE;
     const isTarget = targets.has(cell);
+    // Legal, and shown to be legal. Everything visible keys off `marked`; only the
+    // click handler is allowed to know about `isTarget`.
+    const marked = isTarget && showTargets;
     const seq = seqTeam.get(cell);
 
     // Fade the chip and show the card printed under it. Three ways in: the space
     // was tapped, the peek-all toggle is on, or — free of charge — a one-eyed Jack
     // is selected and this is one of the chips it could lift, which is the moment
-    // the hidden card actually decides the move.
+    // the hidden card actually decides the move. That third one is a highlight in
+    // all but name, so it goes when the highlights do; tap-to-peek and Peek cards
+    // stay, because they only ever show what is printed on the board anyway.
     const peeking = chip != null
-      && (app.peekAll || app.peekCell === cell || (removing && isTarget));
+      && (app.peekAll || app.peekCell === cell || (removing && marked));
 
     const cls = ['cell'];
     if (corner) cls.push('corner');
     if (chip != null) cls.push('taken');
     if (peeking) cls.push('peek');
-    if (isTarget) cls.push(removing ? 'target-remove' : 'target');
+    if (marked) cls.push(removing ? 'target-remove' : 'target');
     if (seq != null) cls.push('in-seq');
     if (cell === lastCell) cls.push('last');
 
@@ -591,15 +622,21 @@ function boardGrid(app, intents) {
 
     const playable = myTurn && isTarget;
     // On your turn an ordinary space still answers, so pressing it before picking
-    // a card tells you to pick one. Off-turn the board is inert but keeps its
-    // highlight, so tapping a card while you wait previews your options.
-    const responds = myTurn && (isTarget || !selected);
+    // a card tells you to pick one. With the highlights off every open space answers
+    // as well: a guess that does nothing at all is indistinguishable from a broken
+    // button, so the host names the reason instead — which is the same thing the
+    // ring was saying, only after the guess rather than before it. Off-turn the
+    // board is inert but keeps its highlight, so tapping a card while you wait
+    // previews your options.
+    const responds = myTurn && (isTarget || !selected || !showTargets);
 
     // Order matters. A legal target always plays or removes — if the peek came
     // first, a one-eyed Jack could never lift anything, because the tap meant to
     // remove would be eaten by the reveal. Peeking therefore only picks up the
     // taps that would otherwise do nothing at all, which is every covered space
-    // you can't act on: the whole board while you wait for your turn.
+    // you can't act on: the whole board while you wait for your turn, and with the
+    // highlights off, the chips a one-eyed Jack may not lift — no explanation
+    // needed there, since the ✦ and the chip's own colour already give the reason.
     const onclick = playable ? () => intents.playAt(cell)
       : chip != null ? () => intents.peekAt(cell)
       : responds ? () => intents.playAt(cell)
@@ -621,7 +658,11 @@ function boardGrid(app, intents) {
       // grid is ONE stop and the arrow keys move inside it.
       tabindex: cell === cursor ? '0' : '-1',
       'data-focus': cell === cursor ? 'board-cell' : null,
-      'aria-label': cellLabel(cell, code, chip, seq != null, playable, removing),
+      // `marked`, not `playable`: with the highlights off the label must go quiet
+      // too, or the house rule would handicap only the players who can see the
+      // board. Nothing is lost — the coordinate, card, occupant and locked state
+      // are still announced, which is everything a sighted player is reasoning from.
+      'aria-label': cellLabel(cell, code, chip, seq != null, myTurn && marked, removing),
       onclick,
     },
       face,
@@ -671,7 +712,9 @@ function cellLabel(cell, code, chip, locked, playable, removing) {
   const who = chip == null ? 'empty' : `${teamTheme(chip).name} chip`;
   const note = locked ? ', in a completed sequence' : '';
   // Whether you can act here is what a sighted player reads instantly off the
-  // highlight, and the one thing a screen-reader user has no other way to learn.
+  // highlight, and the one thing a screen-reader user has no other way to learn —
+  // so the caller passes what the board is showing, not what the engine would
+  // accept, and this goes quiet exactly when the highlights do.
   const action = playable
     ? (removing ? ', press to remove this chip' : ', press to play here')
     : '';
@@ -883,7 +926,9 @@ function rulesOverlay(intents) {
 
     el('div', { class: 'section-label' }, 'EACH TURN'),
     el('ul', { class: 'rule-list' },
-      el('li', {}, 'Tap a card in your hand, then tap one of the highlighted spaces.'),
+      // Worded to hold in both modes: the sheet opens from the home screen too,
+      // where there is no game yet whose setting could be read.
+      el('li', {}, 'Tap a card in your hand, then tap a space that matches it. Matching spaces light up unless the host switched that off.'),
       el('li', {}, 'The card is discarded and you draw a replacement, then play passes to the left.'),
       el('li', {}, 'A chip hides the card under it. Tap the chip to see it for a moment, or use Peek cards to open the whole board at once.'),
       el('li', {}, 'Teammates are never seated next to each other, so play alternates between teams.'),
