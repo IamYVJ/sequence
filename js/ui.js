@@ -470,7 +470,7 @@ function turnBanner(app, intents) {
       ? 'No opponent chip can be removed right now — try another card.'
       : `${cardLabel(selected.code)} has no open space. Swap it as a dead card.`;
   } else if (isOneEyedJack(selected.code)) {
-    hint = 'Tap a marked chip to lift it off the board.';
+    hint = 'Tap a marked chip to lift it off the board — their cards are showing.';
   } else {
     hint = 'Tap a highlighted space to drop your chip.';
   }
@@ -516,8 +516,18 @@ function boardSection(app, intents) {
     el('div', { class: 'board-bar' },
       el('span', { class: 'section-label' }, 'BOARD'),
       el('span', { class: 'deck-count' }, `${pub.deckCount} cards left`),
+      // aria-pressed rather than a changing label alone, so the toggle reads as a
+      // toggle to a screen reader instead of as two different buttons.
+      el('button', {
+        class: 'link-btn board-peek' + (app.peekAll ? ' on' : ''),
+        'aria-pressed': app.peekAll ? 'true' : 'false',
+        'data-focus': 'peek-all',
+        title: 'Show the card under every chip',
+        onclick: () => intents.togglePeekAll(),
+      }, app.peekAll ? 'Hide cards' : 'Peek cards'),
       el('button', {
         class: 'link-btn board-zoom',
+        'data-focus': 'zoom',
         onclick: () => intents.toggleZoom(),
       }, app.zoom ? 'Fit to screen' : 'Zoom in'),
     ),
@@ -551,9 +561,17 @@ function boardGrid(app, intents) {
     const isTarget = targets.has(cell);
     const seq = seqTeam.get(cell);
 
+    // Fade the chip and show the card printed under it. Three ways in: the space
+    // was tapped, the peek-all toggle is on, or — free of charge — a one-eyed Jack
+    // is selected and this is one of the chips it could lift, which is the moment
+    // the hidden card actually decides the move.
+    const peeking = chip != null
+      && (app.peekAll || app.peekCell === cell || (removing && isTarget));
+
     const cls = ['cell'];
     if (corner) cls.push('corner');
     if (chip != null) cls.push('taken');
+    if (peeking) cls.push('peek');
     if (isTarget) cls.push(removing ? 'target-remove' : 'target');
     if (seq != null) cls.push('in-seq');
     if (cell === lastCell) cls.push('last');
@@ -577,6 +595,16 @@ function boardGrid(app, intents) {
     // highlight, so tapping a card while you wait previews your options.
     const responds = myTurn && (isTarget || !selected);
 
+    // Order matters. A legal target always plays or removes — if the peek came
+    // first, a one-eyed Jack could never lift anything, because the tap meant to
+    // remove would be eaten by the reveal. Peeking therefore only picks up the
+    // taps that would otherwise do nothing at all, which is every covered space
+    // you can't act on: the whole board while you wait for your turn.
+    const onclick = playable ? () => intents.playAt(cell)
+      : chip != null ? () => intents.peekAt(cell)
+      : responds ? () => intents.playAt(cell)
+      : null;
+
     return el('button', {
       class: cls.join(' '),
       style,
@@ -584,14 +612,17 @@ function boardGrid(app, intents) {
       // aria-disabled, not disabled: a disabled button cannot be focused, which
       // would leave the board entirely unreachable by keyboard and unreadable to
       // a screen reader — and these labels are the only way to read the board
-      // without seeing it.
-      'aria-disabled': playable ? null : 'true',
+      // without seeing it. It tracks whether the space responds at all, since
+      // claiming a control is disabled while it still does something is a lie.
+      // No peek hint in the label: the card is already announced, so there is
+      // nothing under the chip that a screen reader hasn't been told.
+      'aria-disabled': onclick ? null : 'true',
       // Roving tabindex. A hundred separate tab stops is not navigation, so the
       // grid is ONE stop and the arrow keys move inside it.
       tabindex: cell === cursor ? '0' : '-1',
       'data-focus': cell === cursor ? 'board-cell' : null,
       'aria-label': cellLabel(cell, code, chip, seq != null, playable, removing),
-      onclick: responds ? () => intents.playAt(cell) : null,
+      onclick,
     },
       face,
       // data-team drives a per-team inner mark, so the chips stay distinguishable
@@ -854,6 +885,7 @@ function rulesOverlay(intents) {
     el('ul', { class: 'rule-list' },
       el('li', {}, 'Tap a card in your hand, then tap one of the highlighted spaces.'),
       el('li', {}, 'The card is discarded and you draw a replacement, then play passes to the left.'),
+      el('li', {}, 'A chip hides the card under it. Tap the chip to see it for a moment, or use Peek cards to open the whole board at once.'),
       el('li', {}, 'Teammates are never seated next to each other, so play alternates between teams.'),
     ),
 

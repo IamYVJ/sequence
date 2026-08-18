@@ -419,7 +419,17 @@ body {
 .board-section { display: flex; flex-direction: column; gap: 10px; }
 .board-bar { display: flex; align-items: center; gap: 12px; }
 .deck-count { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-left: auto; }
-.board-zoom { align-self: auto; flex: none; }
+.board-zoom, .board-peek { align-self: auto; flex: none; }
+/* Underline off while it's on: the board is already visibly changed, and a lit
+   pill is the clearer "this is a mode you are in" than a link that looks the
+   same as the one beside it. */
+.board-peek.on {
+  text-decoration: none;
+  background: var(--accent-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 9px;
+}
 
 .board-wrap { width: 100%; }
 /* Zoomed: the board grows past the viewport and the wrapper scrolls, so a cell
@@ -510,6 +520,17 @@ body {
 @keyframes drop { from { transform: scale(1.5); opacity: 0.2; } to { transform: none; opacity: 1; } }
 .cell.taken .card-face { opacity: 0.4; }
 
+/* Peeking under a chip. The chip fades rather than vanishing, so the space still
+   reads as claimed — and by whom — while you read the card you're deciding to
+   lift.
+
+   No transition here, deliberately: a render rebuilds the cell from scratch, so
+   the replacement chip is a brand-new node that paints at its final opacity and
+   has nothing to animate FROM. A transition would be a decorative no-op. The
+   reveal is a hard cut, which for a 1.6s peek is the honest behaviour anyway. */
+.cell.peek .chip { opacity: 0.16; }
+.cell.peek .card-face { opacity: 1; }
+
 /* Legal targets for the selected card. Placement glows gold; removal glows warn
    and carries an × so the two never look alike. */
 .cell.target {
@@ -530,6 +551,17 @@ body {
   font-size: 14px; font-size: 5cqw;
   color: #fff;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+/* A revealed removal target has to say two things at once — here is the card you
+   would uncover, and tapping lifts the chip — so the × steps off the centre and
+   into the corner rather than sitting on top of the rank it just revealed.
+   --warn-ink because plain --warn reads at 1.5:1 on ivory card stock. */
+.cell.peek.target-remove::after {
+  inset: auto 0 0 auto;
+  width: 44%; height: 44%;
+  font-size: 10px; font-size: 3.6cqw;
+  color: var(--warn-ink);
+  text-shadow: none;
 }
 @keyframes breathe { 50% { filter: brightness(1.18); } }
 

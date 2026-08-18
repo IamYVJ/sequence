@@ -49,6 +49,12 @@ const app = {
   selectedCardId: null,
   zoom: false,                 // scale the board up for precise tapping
   confirmEnd: false,           // host armed END GAME and needs a second tap
+  // A chip hides the card printed under it, and that card is exactly what you need
+  // to read before choosing which chip to lift with a one-eyed Jack — or to work
+  // out whether both spaces for a card in your hand are already gone. peekCell
+  // opens one space for a moment; peekAll holds the whole board open.
+  peekCell: null,
+  peekAll: false,
   // Which board space holds the keyboard's place. The board is a single tab stop
   // and the arrow keys move this, so it is the one cell with tabindex 0.
   cursor: 0,
@@ -82,6 +88,16 @@ const JOIN_TIMEOUT = 12000;
 
 function clearJoinTimer() {
   if (joinTimer) { clearTimeout(joinTimer); joinTimer = null; }
+}
+
+// A single-space peek closes itself, so it needs a cancellable timer: tapping a
+// second chip must not inherit the first tap's expiry and shut early.
+let peekTimer = null;
+const PEEK_MS = 1600;
+
+function clearPeek() {
+  if (peekTimer) { clearTimeout(peekTimer); peekTimer = null; }
+  app.peekCell = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,8 +140,13 @@ function draw() {
   const sameView = view === lastView;
   lastView = view;
   // Never carry an armed END GAME across a screen change — the button that armed
-  // it is gone, so there would be nothing on screen explaining the state.
-  if (!sameView) app.confirmEnd = false;
+  // it is gone, so there would be nothing on screen explaining the state. Same
+  // reasoning for a peek: the board it was opened on is no longer here.
+  if (!sameView) {
+    app.confirmEnd = false;
+    app.peekAll = false;
+    clearPeek();
+  }
 
   // Preserve focus + caret across full re-renders (a state broadcast can redraw
   // the page while someone is typing their name).
@@ -600,6 +621,33 @@ const intents = {
     if (back) back.focus();
   },
   toggleZoom: () => { app.zoom = !app.zoom; draw(); },
+  // Lift the chip off one space for a moment so the card under it can be read.
+  // Tapping the same space again shuts it immediately, so a mis-tap doesn't have
+  // to be sat out.
+  peekAt: (cell) => {
+    const same = app.peekCell === cell;
+    clearPeek();
+    app.error = '';
+    if (same) { draw(); return; }
+    app.peekCell = cell;
+    // Let the keyboard follow the eye, so arrowing on from here starts where the
+    // player is actually looking.
+    app.cursor = cell;
+    draw();
+    peekTimer = setTimeout(() => {
+      peekTimer = null;
+      app.peekCell = null;
+      draw();
+    }, PEEK_MS);
+  },
+  // Holds every chip open at once. This is the one that answers "are both spaces
+  // for this card gone?", which a space-at-a-time peek makes into ten taps.
+  togglePeekAll: () => {
+    const on = !app.peekAll;
+    clearPeek();
+    app.peekAll = on;
+    draw();
+  },
   dismissError: () => { app.error = ''; draw(); },
 
   host: () => startHosting(),

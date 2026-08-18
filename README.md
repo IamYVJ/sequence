@@ -33,6 +33,11 @@ Key rules the app enforces for you:
 - A card whose two spaces are both covered is **dead** and is marked as such in
   your hand. Select it and tap **Swap** to discard it and draw a fresh one — once
   per turn by default.
+- A chip **hides the card printed under it**. Tap the chip to lift it for a
+  moment, or use **Peek cards** to hold the whole board open — that's how you
+  check whether both spaces for a card in your hand are already gone. Selecting a
+  one-eyed Jack reveals every chip it could lift for free, since that is the
+  moment the hidden card decides the move.
 - **Pass** is only offered when you genuinely have no legal move and no dead card
   to swap, so a hand of unplayable one-eyed Jacks can't deadlock the game.
 
