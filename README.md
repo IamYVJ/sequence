@@ -42,6 +42,11 @@ Key rules the app enforces for you:
   to read the board for itself can turn that off (see below); the rules don't
   change, and a tap on the wrong space says why it was wrong instead of doing
   nothing.
+- The **last move is ringed** in the colour of the team that made it — dashed, so
+  it never reads as a space you may play on — and pulses once as it lands, so you
+  can see what changed while you were looking at your own hand. A one-eyed Jack's
+  removal leaves a hollow chip outline behind, because otherwise the one move whose
+  news is what *left* the board would have nothing to look at.
 - **Pass** is only offered when you genuinely have no legal move and no dead card
   to swap, so a hand of unplayable one-eyed Jacks can't deadlock the game.
 
@@ -164,7 +169,8 @@ the board anyway.
 - **Playable without a mouse or without sight:** the board is a single tab stop
   with a roving cursor — arrows move one space, Home/End run to the ends of a row,
   PageUp/PageDown to the ends of a column — and every space announces its
-  coordinate, card, occupant, locked state and whether you can act there.
+  coordinate, card, occupant, locked state, whether it was the last move and who
+  made it, and whether you can act there.
   Selecting a card parks the cursor on its first legal space. Both of those last
   two track the highlight setting rather than legality, and in memory mode a
   covered space announces "card hidden" rather than naming the card — so a table

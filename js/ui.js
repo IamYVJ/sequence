@@ -679,7 +679,8 @@ function boardGrid(app, intents) {
   const seqTeam = new Map();
   for (const s of pub.sequences) for (const cell of s.cells) seqTeam.set(cell, s.team);
 
-  const lastCell = pub.lastMove ? pub.lastMove.cell : null;
+  const lastMove = pub.lastMove;
+  const lastCell = lastMove ? lastMove.cell : null;
   const cursor = Math.min(Math.max(app.cursor | 0, 0), pub.layout.length - 1);
 
   const cells = pub.layout.map((code, cell) => {
@@ -709,14 +710,24 @@ function boardGrid(app, intents) {
     if (peeking) cls.push('peek');
     if (marked) cls.push(removing ? 'target-remove' : 'target');
     if (seq != null) cls.push('in-seq');
-    if (cell === lastCell) cls.push('last');
+    const isLast = cell === lastCell;
+    // A removal is the one last move that leaves nothing behind to look at, so it
+    // gets its own marker rather than just the ring.
+    const lifted = isLast && lastMove.action === 'remove';
+    if (isLast) cls.push('last');
 
     // The chip colour wins the --team slot; a bare corner inside a sequence
     // borrows the line's colour so the run reads as one unbroken streak.
     const themeIdx = chip != null ? chip : seq;
-    const style = themeIdx != null
-      ? `--team:${teamTheme(themeIdx).color};--team-dim:${teamTheme(themeIdx).dim}`
-      : '';
+    // --last is deliberately separate from --team: on a removal there is no chip
+    // and no sequence, so --team resolves to the gold root default, and the last
+    // move would come out the colour of a legal target.
+    const style = [
+      themeIdx != null
+        ? `--team:${teamTheme(themeIdx).color};--team-dim:${teamTheme(themeIdx).dim}`
+        : '',
+      isLast ? `--last:${teamTheme(lastMove.team).color}` : '',
+    ].filter(Boolean).join(';');
 
     // A hollow star for a corner that has to be earned — shape, not colour, so it
     // survives being read in greyscale or by someone who cannot tell the fill from
@@ -775,7 +786,8 @@ function boardGrid(app, intents) {
       // board. Nothing is lost — the coordinate, card, occupant and locked state
       // are still announced, which is everything a sighted player is reasoning from.
       'aria-label': cellLabel(cell, code, chip, seq != null, myTurn && marked, removing,
-        { hardCorner: corner && hardCorners, hidden: !canPeek }),
+        { hardCorner: corner && hardCorners, hidden: !canPeek,
+          last: isLast ? lastMove.action : null, lastBy: isLast ? lastMove.name : null }),
       onclick,
     },
       face,
@@ -783,6 +795,9 @@ function boardGrid(app, intents) {
       // without relying on hue (green and red read almost identically to a
       // red/green colour-blind player). The scoreboard dots carry the same marks.
       chip != null ? el('span', { class: 'chip', 'data-team': String(chip) }) : null,
+      // Where the lifted chip used to be. aria-hidden because the cell's own label
+      // already says a chip was just lifted from here, in words.
+      lifted ? el('span', { class: 'ghost-chip', 'aria-hidden': 'true' }) : null,
       seq != null ? el('span', { class: 'lock-mark', 'aria-hidden': 'true' }, '✦') : null,
     );
   });
@@ -819,7 +834,8 @@ const BOARD_KEYS = {
   PageDown:   [0, BOARD_SIZE],
 };
 
-function cellLabel(cell, code, chip, locked, playable, removing, { hardCorner, hidden } = {}) {
+function cellLabel(cell, code, chip, locked, playable, removing,
+  { hardCorner, hidden, last, lastBy } = {}) {
   const where = cellName(cell);
   // "free corner" would be a false statement under hard corners, and this label is
   // the whole board for a player who cannot see it — the ☆ has to be readable too.
@@ -843,7 +859,16 @@ function cellLabel(cell, code, chip, locked, playable, removing, { hardCorner, h
   const action = playable
     ? (removing ? ', press to remove this chip' : ', press to play here')
     : '';
-  return `${where}, ${what}, ${who}${note}${action}`;
+  // The ring and the ghost chip are the sighted board's answer to "what changed
+  // while I was looking away?". Spelled out here so the answer is on the cell
+  // itself, not only in the move feed — and named, since knowing WHO moved is half
+  // of it. A removal has to say what left: the space now reads "empty" like any
+  // other, so the ghost outline is the only thing distinguishing it.
+  const who2 = lastBy ? ` by ${lastBy}` : '';
+  const recent = !last ? ''
+    : last === 'remove' ? `, last move${who2} — a chip was lifted from here`
+      : `, last move${who2}`;
+  return `${where}, ${what}, ${who}${note}${recent}${action}`;
 }
 
 // --- Hand ----------------------------------------------------------------

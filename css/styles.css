@@ -614,12 +614,61 @@ body {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
   line-height: 1;
 }
+/* The last move. Three jobs: be findable on a 100-cell board, say WHO made it,
+   and never be mistaken for a space you can play on — which is what a gold ring
+   got wrong, since gold means "legal target" everywhere else here.
+
+   The colour comes from --last, set in ui.js from lastMove.team, NOT from --team:
+   a removal leaves no chip behind, so --team would fall back to the gold root
+   default on the one move that most needs finding. Dashed, because the solid team
+   ring already means "inside a completed sequence".
+
+   2px and not 1.5px: browsers snap border widths to whole device pixels, so at the
+   1.25x scaling that Windows ships by default 1.5px collapses to a single device
+   pixel — the exact weight of the cell's own hairline border, which is the one
+   thing this ring must not look like. 2px survives the snap at two pixels. Don't
+   "tidy" it back to a fraction. */
 .cell.last::before {
   content: '';
   position: absolute; inset: 1px;
-  border: 1.5px dashed var(--accent);
+  border: 2px dashed var(--last, var(--accent));
   border-radius: 2px;
   pointer-events: none;
+}
+/* Both at once — the move that completed a sequence. in-seq's solid ring occupies
+   the outer 2px, so the dashed one steps inside it instead of sitting on top,
+   where two rings of one colour read as a single thick smudge. */
+.cell.in-seq.last::before { inset: 3px; }
+
+/* A one-eyed Jack lifted a chip from here. This is the one "last move" that can
+   be missed entirely, because the news is what is NO LONGER on the board — an
+   empty space looks the same as the other sixty. So the chip's outline stays
+   behind, hollow and in the colour of whoever lifted it. Same inset as .chip, so
+   it sits exactly where the chip was. 2px for the same device-pixel reason as the
+   ring above, and it matters more here: on a removal this outline is the only thing
+   on the space. */
+.ghost-chip {
+  position: absolute;
+  inset: 12%;
+  border-radius: 50%;
+  border: 2px dashed var(--last, var(--accent));
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+/* Drawn once, on the render that made the move — gated on .fresh-move for the
+   same reason the chip drop is: without it every unrelated rebuild would re-pulse
+   the ring, and the board would twitch every time anyone peeked or tapped a card.
+   The ring collapses inward rather than scaling up, because .cell is overflow:
+   hidden and anything larger than the cell is simply clipped away.
+
+   No `to` frame: inset and opacity fall back to the element's own computed values,
+   which is what lets the .in-seq variant land on 3px instead of fighting a
+   hard-coded 1px. */
+.app-root.fresh-move .cell.last::before { animation: last-pulse 0.7s ease-out; }
+@keyframes last-pulse {
+  from { inset: 7px; opacity: 0; }
+  45%  { opacity: 1; }
 }
 
 /* --- Hand dock ---------------------------------------------------------- */
