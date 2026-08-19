@@ -852,7 +852,9 @@ function hand(app, intents) {
   if (!priv) return el('p', { class: 'fine' }, 'Waiting for your cards…');
   if (!priv.hand.length) return el('p', { class: 'fine' }, 'No cards left in hand.');
 
-  return el('div', { class: 'hand', 'data-keep-scroll': 'hand' },
+  // No data-keep-scroll here: the hand no longer scrolls, so there is no scroll
+  // position for a rebuild to lose.
+  return el('div', { class: 'hand' },
     ...priv.hand.map((c) => {
       const cls = ['card'];
       if (c.id === app.selectedCardId) cls.push('selected');

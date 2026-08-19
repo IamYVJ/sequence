@@ -637,17 +637,38 @@ body {
   border-top: 1px solid var(--border-soft);
 }
 
+/* The whole hand has to be on screen at once. A scrolling dock hid cards off the
+   right edge with nothing to say they were there — you cannot decide between
+   seven cards you cannot see, and "is that all of them?" is not a question the
+   board should make you ask. So the cards shrink to fit instead: they keep their
+   natural size until the row runs out of room, then divide what is left.
+
+   The gap shrinks with the viewport too, because at the worst case — a 2-player
+   game, which deals the largest hand of 7 — the gaps are what the card widths are
+   competing with. */
 .hand {
   display: flex;
-  gap: 8px;
-  overflow-x: auto;
+  gap: clamp(4px, 1.8vw, 8px);
   padding: 2px 0 4px;
-  -webkit-overflow-scrolling: touch;
+  min-width: 0;
 }
 .card {
-  flex: 0 0 auto;
+  /* Basis 0 rather than the card width, so the row never overflows and the
+     max-width alone decides the natural size. min-width: 0 lets the rank and
+     suit be overflowed rather than propping the card open past its share. */
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 58px;
   position: relative;
-  width: 58px; height: 82px;
+  /* So .card-tag can size itself against the card rather than the viewport — a
+     shrunk card needs a shrunk "REMOVE", which is the widest thing on it.
+     padding: 0 is load-bearing for that: a button carries 6px of UA padding, and
+     cq units measure the CONTENT box, so leaving it in would have the tag sizing
+     itself against 21px of a 35px card. The content is a centred flex column, so
+     the padding was doing nothing anyway. */
+  container-type: inline-size;
+  padding: 0;
+  height: 82px;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 1px;
   border-radius: 8px;
@@ -664,7 +685,12 @@ body {
    4.5:1, and fading the near-black ink into the card left it at 3.5:1. */
 .card-tag {
   position: absolute; bottom: 4px;
-  font-family: var(--mono); font-size: 8px; font-weight: 700; letter-spacing: 0.08em;
+  font-family: var(--mono); font-weight: 700; letter-spacing: 0.08em;
+  /* 8px until the card is too narrow to hold "REMOVE" at that size, then it
+     tracks the card. The px line is the fallback for a browser without cq units,
+     where min() is invalid and the whole second declaration is dropped. */
+  font-size: 8px;
+  font-size: min(8px, 20cqw);
   color: #4A4F53;
 }
 .card.selected {
@@ -820,7 +846,9 @@ body {
 
 /* --- Roomier on real screens ------------------------------------------- */
 @media (min-width: 520px) {
-  .card { width: 66px; height: 94px; }
+  /* max-width, not width — the card still has to be able to shrink below this,
+     since 520px of viewport is not automatically enough for seven of them. */
+  .card { max-width: 66px; height: 94px; }
   .card-rank { font-size: 24px; }
   .card-suit { font-size: 20px; }
   .board-wrap.zoom .board { width: 140%; }
