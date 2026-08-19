@@ -16,9 +16,9 @@ import {
 } from './board.js';
 import {
   MAX_PLAYERS, DEFAULTS, buildDeck, shuffle, cleanName, cardLabel,
-  normalizeConfig, validateStart, handSizeFor, sequencesToWinFor,
+  normalizeConfig, validateStart, handSizeFor, winTargetFor,
   legalTargets, isDeadCard, isOneEyedJack, isTwoEyedJack, newSequencesAt,
-  teamTheme, describeSeating,
+  teamTheme, describeSeating, describeHouseRules,
 } from './rules.js';
 
 export const PHASES = {
@@ -219,11 +219,16 @@ export class GameEngine {
     this.turn = this.players.length ? this.gamesPlayed % this.players.length : 0;
     this.phase = PHASES.PLAY;
     this._log(`${describeSeating(this.players.length, this.config.numTeams)} — ${this.sequencesToWin} sequence${this.sequencesToWin > 1 ? 's' : ''} to win.`);
+    // House rules go in the log as well as the lobby, so a player who is looking
+    // at the board rather than the summary still finds out what game this is —
+    // and so does anyone scrolling back to work out why a move was refused.
+    const house = describeHouseRules(this.config);
+    if (house.length) this._log(`House rules: ${house.join(', ')}.`);
     return { ok: true };
   }
 
   get handSize() { return handSizeFor(this.players.length); }
-  get sequencesToWin() { return sequencesToWinFor(this.config.numTeams); }
+  get sequencesToWin() { return winTargetFor(this.config); }
 
   // -------------------------------------------------------------------------
   // Playing a turn
@@ -256,7 +261,7 @@ export class GameEngine {
       this.chips[cell] = null;
     } else {
       this.chips[cell] = player.team;
-      sequencesWon = newSequencesAt(cell, player.team, this.chips, this.sequences);
+      sequencesWon = newSequencesAt(cell, player.team, this.chips, this.sequences, this.config);
       for (const cells of sequencesWon) this.sequences.push({ team: player.team, cells });
     }
 
@@ -389,13 +394,21 @@ export class GameEngine {
   // Derived queries
   // -------------------------------------------------------------------------
 
-  /** The read-only bundle the pure rule functions need. */
+  /**
+   * The read-only bundle the pure rule functions need.
+   *
+   * `config` rides along because the house rules change what is legal, and this
+   * is the one place legalTargets is ever handed its board — so a rule added to
+   * config reaches validation, the highlights and hasLegalMove together, and
+   * cannot end up enforced in one of the three and not the others.
+   */
   _boardView(team) {
     return {
       layout: this.layout,
       cellIndex: this.cellIndex,
       chips: this.chips,
       sequences: this.sequences,
+      config: this.config,
       team,
     };
   }
@@ -430,18 +443,33 @@ export class GameEngine {
     return { ok: true };
   }
 
+  // Each line has to describe the rule THIS table is playing, not the one in the
+  // box: with the highlights off this text is the only thing telling a player why
+  // their tap did nothing, so a house rule it contradicts would read as a bug.
   _illegalMoveReason(code, cell, targets) {
+    const anyChip = !!this.config.jacksRemoveAny;
+    const whoseChip = anyChip ? 'chip' : 'opponent chip';
     if (targets.length === 0) {
-      if (isOneEyedJack(code)) return 'There is no opponent chip that can be removed.';
+      if (isOneEyedJack(code)) return `There is no ${whoseChip} that can be removed.`;
       return `${cardLabel(code)} has no open space — swap it as a dead card.`;
     }
     if (!Number.isInteger(cell)) return 'Pick a space on the board.';
     if (isOneEyedJack(code)) {
-      if (this.chips[cell] == null) return 'That space is empty — a one-eyed Jack removes an opponent chip.';
+      if (this.chips[cell] == null) return `That space is empty — a one-eyed Jack removes ${anyChip ? 'a' : 'an opponent\'s'} chip.`;
+      const mine = this.currentPlayer ? this.currentPlayer.team : null;
+      if (!anyChip && this.chips[cell] === mine) {
+        return 'That is your own team\'s chip — a one-eyed Jack only lifts an opponent\'s.';
+      }
       return 'That chip is part of a completed sequence, so it cannot be removed.';
     }
     if (this.chips[cell] != null) return 'That space is already taken.';
-    if (isCorner(cell)) return 'The corners are free spaces — they are already everyone\'s.';
+    if (isCorner(cell)) {
+      // Hard corners make a corner an ordinary space, but still one with no card
+      // printed on it — so the reason it rejected a numbered card is different.
+      return this.config.hardCorners
+        ? 'No card is printed on a corner — only a wild Jack can cover one this game.'
+        : 'The corners are free spaces — they are already everyone\'s.';
+    }
     return `${cardLabel(code)} does not match that space.`;
   }
 

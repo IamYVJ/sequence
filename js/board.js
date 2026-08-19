@@ -147,29 +147,34 @@ export function cellName(cell) {
 }
 
 // ---------------------------------------------------------------------------
-// Geometry — the four line directions and the 5-cell windows through a cell.
+// Geometry — the four line directions and the N-cell windows through a cell.
 // ---------------------------------------------------------------------------
 const DIRECTIONS = Object.freeze([[0, 1], [1, 0], [1, 1], [1, -1]]);
 
+/** Five in a row, as printed on the box. A house rule may shorten or lengthen it. */
 export const SEQUENCE_LENGTH = 5;
 
 /**
- * Every on-board 5-cell straight line that passes through `cell`, in all four
- * directions. Up to 20 windows; fewer near an edge.
+ * Every on-board straight line of `length` cells that passes through `cell`, in
+ * all four directions. Up to 4 x length windows; fewer near an edge.
+ *
+ * `length` defaults to the official 5 so every caller that does not care about
+ * the house rule reads as it always did.
  */
-export function windowsThrough(cell) {
+export function windowsThrough(cell, length = SEQUENCE_LENGTH) {
+  const n = Number.isInteger(length) && length > 1 ? length : SEQUENCE_LENGTH;
   const r = Math.floor(cell / BOARD_SIZE), c = cell % BOARD_SIZE;
   const out = [];
   for (const [dr, dc] of DIRECTIONS) {
-    for (let offset = -(SEQUENCE_LENGTH - 1); offset <= 0; offset++) {
+    for (let offset = -(n - 1); offset <= 0; offset++) {
       const cells = [];
-      for (let k = 0; k < SEQUENCE_LENGTH; k++) {
+      for (let k = 0; k < n; k++) {
         const rr = r + (offset + k) * dr;
         const cc = c + (offset + k) * dc;
         if (rr < 0 || rr >= BOARD_SIZE || cc < 0 || cc >= BOARD_SIZE) { cells.length = 0; break; }
         cells.push(rr * BOARD_SIZE + cc);
       }
-      if (cells.length === SEQUENCE_LENGTH) out.push(cells);
+      if (cells.length === n) out.push(cells);
     }
   }
   return out;

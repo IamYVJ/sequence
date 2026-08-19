@@ -14,8 +14,10 @@
 import { el, clear } from './util.js';
 import { BOARD_SIZE, FREE, cellName } from './board.js';
 import {
-  MAX_PLAYERS, SEATINGS, LIMITS,
-  teamTheme, allowedTeamCounts, describeSeating, highlightsOn,
+  MAX_PLAYERS, SEATINGS, LIMITS, PRESETS,
+  teamTheme, allowedTeamCounts, describeSeating, highlightsOn, peeksAllowed,
+  presetOf, presetConfig, sequencesToWinFor, sequenceLengthFor, winTargetFor,
+  describeHouseRules,
   rankLabel, suitGlyph, isRedSuit, cardLabel,
   isTwoEyedJack, isOneEyedJack, isJack,
 } from './rules.js';
@@ -47,7 +49,9 @@ export function render(root, app, intents) {
   // visible underneath instead of yanking the player to a spinner.
   if (app.reconnecting && app.screen === 'game') root.appendChild(reconnectBanner());
   else if (app.netWarning) root.appendChild(netBanner(app, intents));
-  if (app.showRules) root.appendChild(rulesOverlay(intents));
+  // The config, when there is a game to read one from — the sheet also opens from
+  // the home screen, where the only honest thing to describe is the official game.
+  if (app.showRules) root.appendChild(rulesOverlay(intents, app.pub && app.pub.config));
 }
 
 function reconnectBanner() {
@@ -341,15 +345,23 @@ function moveBtn(glyph, label, enabled, onclick) {
 
 function seatingSummary(pub) {
   const win = pub.sequencesToWin;
+  const len = sequenceLengthFor(pub.config);
+  // The house rules in force, in the same words the move log uses — the point of
+  // listing them here is that a player joining a table with a rule they don't
+  // expect finds out BEFORE the deal. Only the ones in force: a line saying the
+  // app behaves normally is a line nobody needs to read.
+  //
+  // Two are dropped because the fixed pills above already say them, and better:
+  // the line length and the board layout.
+  const house = describeHouseRules(pub.config)
+    .filter((s) => !s.startsWith(`${len} in a row`) && s !== 'shuffled board');
   return el('ul', { class: 'summary-list' },
     el('li', {}, el('strong', {}, describeSeating(pub.players.length, pub.config.numTeams))),
     el('li', {}, el('strong', {}, String(pub.handSize)), ' cards each'),
+    el('li', {}, el('strong', {}, String(len)), ' in a row'),
     el('li', {}, el('strong', {}, String(win)), ` sequence${win > 1 ? 's' : ''} to win`),
     el('li', {}, pub.config.shuffleBoard ? 'Shuffled board' : 'Classic board'),
-    // Only when it is off. Everyone who joins needs to know the board will not be
-    // pointing anything out before the first card is dealt, but a line saying the
-    // app behaves normally is a line nobody needs to read.
-    highlightsOn(pub.config) ? null : el('li', {}, 'No highlights — find your own matches'),
+    ...house.map((s) => el('li', { class: 'house' }, s)),
   );
 }
 
@@ -368,17 +380,81 @@ function configEditor(app, intents) {
       : el('div', { class: 'stepper' },
           el('span', { class: 'stepper-label' }, 'Teams'),
           el('span', { class: 'stepper-val' }, String(c.numTeams))),
+    presetRow(c, intents),
+
+    subLabel('The rules'),
+    stepper('Chips in a row', c.sequenceLength, LIMITS.sequenceLength,
+      (v) => intents.setConfig({ sequenceLength: v })),
+    // A live warning rather than forcing hardCorners on: a toggle that moves
+    // another toggle when you touch it is worse than one that explains itself.
+    c.sequenceLength < 5 && !c.hardCorners
+      ? el('p', { class: 'fine warn-fine' },
+          `A corner counts as everyone's chip, so a line through one needs only ${c.sequenceLength - 1} real chips. Turn off free corners below to keep it honest.`)
+      : null,
+    stepper('Sequences to win', c.sequencesToWin, LIMITS.sequencesToWin,
+      (v) => intents.setConfig({ sequencesToWin: v }),
+      // 0 is the sentinel for "follow the official table", which is a word rather
+      // than a number on screen — nobody wants to win zero sequences.
+      { format: (v) => (v === 0 ? 'Auto' : String(v)) }),
+    el('p', { class: 'fine' },
+      `Auto follows the official table: two sequences for two teams, one for three. This table would race to ${sequencesToWinFor(c.numTeams)}.`),
+    toggleRow('Free corners', !c.hardCorners,
+      () => intents.setConfig({ hardCorners: !c.hardCorners }),
+      // Phrased as the ON state so the switch matches the printed board, where the
+      // corners ARE free — "hard corners" would be a switch you turn on to get the
+      // official game, which reads backwards.
+      'The four ★ corners count as a chip for every team. Switch off and a line through a corner needs a real chip there — and since no card is printed on a corner, only a wild Jack can put one down.'),
+    toggleRow('Strict sequences', c.strictSequences,
+      () => intents.setConfig({ strictSequences: !c.strictSequences }),
+      'Your two sequences may not share a chip at all. The official rule allows exactly one shared chip, which makes the second sequence much cheaper.'),
+    toggleRow('Cutthroat Jacks', c.jacksRemoveAny,
+      () => intents.setConfig({ jacksRemoveAny: !c.jacksRemoveAny }),
+      'A one-eyed Jack lifts ANY chip, including your own team\'s. Chips already locked in a completed sequence stay safe either way.'),
+    stepper('Dead cards per turn', c.deadCardsPerTurn, LIMITS.deadCardsPerTurn,
+      (v) => intents.setConfig({ deadCardsPerTurn: v })),
+    el('p', { class: 'fine' },
+      'A card is dead when both its spaces are already covered. The official rule is one swap per turn; set 0 to switch swapping off.'),
+
+    subLabel('The board'),
     toggleRow('Highlight matching spaces', c.showTargets,
       () => intents.setConfig({ showTargets: !c.showTargets }),
       'Lights up every space the card you picked could go. Switch it off to read the board yourself — what is legal does not change, and a wrong tap still says why it was wrong.'),
     toggleRow('Shuffle the board', c.shuffleBoard,
       () => intents.setConfig({ shuffleBoard: !c.shuffleBoard }),
       'Deals the same 96 cards into a fresh arrangement instead of the printed retail layout. Twin cards are kept apart, so the geometry still plays fair.'),
-    stepper('Dead cards per turn', c.deadCardsPerTurn, LIMITS.deadCardsPerTurn,
-      (v) => intents.setConfig({ deadCardsPerTurn: v })),
-    el('p', { class: 'fine' },
-      'A card is dead when both its spaces are already covered. The official rule is one swap per turn; set 0 to switch swapping off.'),
+    toggleRow('Memory mode', c.memoryMode,
+      () => intents.setConfig({ memoryMode: !c.memoryMode }),
+      'A chip keeps the card underneath hidden — no tapping to look, no Peek cards. Remembering what got covered becomes part of the game. What is legal does not change.'),
   );
+}
+
+/**
+ * The named bundles, above the switches they set. Picking one writes every rule
+ * key at once (see presetConfig), so Classic also means "undo my fiddling" and no
+ * preset can inherit a leftover from the one before it.
+ */
+function presetRow(c, intents) {
+  const current = presetOf(c);
+  const preset = PRESETS.find((p) => p.id === current);
+  return el('div', { class: 'preset' },
+    el('span', { class: 'stepper-label' }, 'Preset'),
+    el('div', { class: 'segmented' },
+      ...PRESETS.map((p) => el('button', {
+        class: 'seg' + (p.id === current ? ' sel' : ''),
+        'aria-pressed': p.id === current ? 'true' : 'false',
+        onclick: () => intents.setConfig(presetConfig(p.id)),
+      }, p.name)),
+      // Not a button — there is nothing to pick. It marks where the settings stand
+      // once the host has tuned away from all three, so the row never goes on
+      // claiming a preset this table is no longer playing.
+      current ? null : el('span', { class: 'seg sel is-custom' }, 'Custom'),
+    ),
+    el('p', { class: 'fine' }, preset ? preset.blurb : 'Your own mix of the settings below.'),
+  );
+}
+
+function subLabel(text) {
+  return el('div', { class: 'sub-label' }, el('span', {}, text));
 }
 
 function segmented(label, options, value, onPick) {
@@ -393,15 +469,23 @@ function segmented(label, options, value, onPick) {
   );
 }
 
-function stepper(label, value, limit, onChange, suffix = '', step = 1) {
+/**
+ * `format` renders the value for both the display and the screen reader, so a
+ * sentinel like "0 means auto" can read as a word without the two disagreeing.
+ */
+function stepper(label, value, limit, onChange, { format, step = 1 } = {}) {
   const dec = () => onChange(Math.max(limit.min, value - step));
   const inc = () => onChange(Math.min(limit.max, value + step));
+  const shown = format ? format(value) : String(value);
   return el('div', { class: 'stepper' },
     el('span', { class: 'stepper-label' }, label),
     el('div', { class: 'stepper-ctrl' },
       el('button', { class: 'step-btn', 'aria-label': 'Decrease ' + label,
         disabled: value <= limit.min ? true : false, onclick: dec }, '−'),
-      el('span', { class: 'stepper-val' }, value + suffix),
+      // Deliberately not a live region. draw() rebuilds the whole tree, so a
+      // role="status" here would re-announce on every unrelated render; the label
+      // just makes the value readable when a screen reader walks the row.
+      el('span', { class: 'stepper-val', 'aria-label': `${label}: ${shown}` }, shown),
       el('button', { class: 'step-btn', 'aria-label': 'Increase ' + label,
         disabled: value >= limit.max ? true : false, onclick: inc }, '+'),
     ),
@@ -465,6 +549,11 @@ function turnBanner(app, intents) {
   const myTurn = !!(priv && priv.isTurn);
   const selected = selectedCard(app);
 
+  // Every line below has to describe the rules THIS table is playing. A hint that
+  // names the official rule while the host has changed it is worse than no hint:
+  // it sends the player looking for a move the engine will refuse.
+  const anyChip = !!pub.config.jacksRemoveAny;
+
   let hint;
   if (!myTurn) {
     hint = current && !current.online
@@ -478,19 +567,22 @@ function turnBanner(app, intents) {
     hint = 'Pick a card from your hand.';
   } else if (selected.targets.length === 0) {
     hint = isOneEyedJack(selected.code)
-      ? 'No opponent chip can be removed right now — try another card.'
+      ? `No ${anyChip ? '' : 'opponent '}chip can be removed right now — try another card.`
       : `${cardLabel(selected.code)} has no open space. Swap it as a dead card.`;
   } else if (!highlightsOn(pub.config)) {
     // Nothing is marked, so the hint has to describe the rule instead of pointing
     // at the board. It can still say a move exists — the Swap and Pass buttons
     // give that away anyway — just not where.
     hint = isOneEyedJack(selected.code)
-      ? 'Lift an opponent chip that is not already in a sequence.'
+      ? `Lift ${anyChip ? 'any' : 'an opponent'} chip that is not already in a sequence.`
       : isTwoEyedJack(selected.code)
-        ? 'Wild — tap any open space on the board.'
+        ? `Wild — tap any open space${pub.config.hardCorners ? ', corners included' : ''}.`
         : `Find a ${cardLabel(selected.code)} on the board and tap it.`;
   } else if (isOneEyedJack(selected.code)) {
-    hint = 'Tap a marked chip to lift it off the board — their cards are showing.';
+    // The free reveal is the reason for that second clause, so it goes when memory
+    // mode takes the reveal away.
+    hint = 'Tap a marked chip to lift it off the board'
+      + (peeksAllowed(pub.config) ? ' — their cards are showing.' : '.');
   } else {
     hint = 'Tap a highlighted space to drop your chip.';
   }
@@ -536,15 +628,18 @@ function boardSection(app, intents) {
     el('div', { class: 'board-bar' },
       el('span', { class: 'section-label' }, 'BOARD'),
       el('span', { class: 'deck-count' }, `${pub.deckCount} cards left`),
+      // Gone in memory mode rather than disabled: a greyed-out button invites the
+      // table to keep asking the host to un-grey it, and there is nothing here to
+      // re-enable mid-game anyway — the setting is locked once the deal happens.
       // aria-pressed rather than a changing label alone, so the toggle reads as a
       // toggle to a screen reader instead of as two different buttons.
-      el('button', {
+      peeksAllowed(pub.config) ? el('button', {
         class: 'link-btn board-peek' + (app.peekAll ? ' on' : ''),
         'aria-pressed': app.peekAll ? 'true' : 'false',
         'data-focus': 'peek-all',
         title: 'Show the card under every chip',
         onclick: () => intents.togglePeekAll(),
-      }, app.peekAll ? 'Hide cards' : 'Peek cards'),
+      }, app.peekAll ? 'Hide cards' : 'Peek cards') : null,
       el('button', {
         class: 'link-btn board-zoom',
         'data-focus': 'zoom',
@@ -571,6 +666,12 @@ function boardGrid(app, intents) {
   // play here" together — leave any one of them in and the setting just moves the
   // answer somewhere else instead of removing it.
   const showTargets = highlightsOn(pub.config);
+  // Memory mode. Same shape of house rule and the same discipline: withdraw every
+  // way of seeing under a chip at once, or the setting just moves the answer.
+  const canPeek = peeksAllowed(pub.config);
+  // With hard corners a ★ is no longer everyone's chip, so it must not go on
+  // looking like one — and it becomes a space a wild can actually cover.
+  const hardCorners = !!pub.config.hardCorners;
 
   // Cells inside a completed sequence, and which team owns that line. Locked
   // chips can't be lifted by a one-eyed Jack, so the marker is meaningful, not
@@ -596,11 +697,14 @@ function boardGrid(app, intents) {
     // the hidden card actually decides the move. That third one is a highlight in
     // all but name, so it goes when the highlights do; tap-to-peek and Peek cards
     // stay, because they only ever show what is printed on the board anyway.
-    const peeking = chip != null
+    //
+    // Memory mode closes all three, and it is the only setting that does: what is
+    // printed under a chip is exactly what it takes away.
+    const peeking = chip != null && canPeek
       && (app.peekAll || app.peekCell === cell || (removing && marked));
 
     const cls = ['cell'];
-    if (corner) cls.push('corner');
+    if (corner) cls.push(hardCorners ? 'corner hard-corner' : 'corner');
     if (chip != null) cls.push('taken');
     if (peeking) cls.push('peek');
     if (marked) cls.push(removing ? 'target-remove' : 'target');
@@ -614,8 +718,11 @@ function boardGrid(app, intents) {
       ? `--team:${teamTheme(themeIdx).color};--team-dim:${teamTheme(themeIdx).dim}`
       : '';
 
+    // A hollow star for a corner that has to be earned — shape, not colour, so it
+    // survives being read in greyscale or by someone who cannot tell the fill from
+    // the felt.
     const face = corner
-      ? el('span', { class: 'free-mark' }, '★')
+      ? el('span', { class: 'free-mark' }, hardCorners ? '☆' : '★')
       : el('span', { class: 'card-face' + (isRedSuit(code) ? ' red' : '') },
           el('span', { class: 'rank' }, rankLabel(code)),
           el('span', { class: 'suit' }, suitGlyph(code)));
@@ -637,8 +744,11 @@ function boardGrid(app, intents) {
     // you can't act on: the whole board while you wait for your turn, and with the
     // highlights off, the chips a one-eyed Jack may not lift — no explanation
     // needed there, since the ✦ and the chip's own colour already give the reason.
+    // In memory mode the peek branch drops out, so a covered space you cannot act
+    // on falls through to `responds` and gets told it is taken — or goes inert off
+    // your turn, which is honest: there is genuinely nothing to do there.
     const onclick = playable ? () => intents.playAt(cell)
-      : chip != null ? () => intents.peekAt(cell)
+      : (chip != null && canPeek) ? () => intents.peekAt(cell)
       : responds ? () => intents.playAt(cell)
       : null;
 
@@ -651,8 +761,10 @@ function boardGrid(app, intents) {
       // a screen reader — and these labels are the only way to read the board
       // without seeing it. It tracks whether the space responds at all, since
       // claiming a control is disabled while it still does something is a lie.
-      // No peek hint in the label: the card is already announced, so there is
-      // nothing under the chip that a screen reader hasn't been told.
+      // Outside memory mode there is no peek hint in the label, because the card
+      // is already announced and there is nothing under the chip a screen reader
+      // hasn't been told. In memory mode the label withholds it instead — see
+      // cellLabel.
       'aria-disabled': onclick ? null : 'true',
       // Roving tabindex. A hundred separate tab stops is not navigation, so the
       // grid is ONE stop and the arrow keys move inside it.
@@ -662,7 +774,8 @@ function boardGrid(app, intents) {
       // too, or the house rule would handicap only the players who can see the
       // board. Nothing is lost — the coordinate, card, occupant and locked state
       // are still announced, which is everything a sighted player is reasoning from.
-      'aria-label': cellLabel(cell, code, chip, seq != null, myTurn && marked, removing),
+      'aria-label': cellLabel(cell, code, chip, seq != null, myTurn && marked, removing,
+        { hardCorner: corner && hardCorners, hidden: !canPeek }),
       onclick,
     },
       face,
@@ -706,9 +819,21 @@ const BOARD_KEYS = {
   PageDown:   [0, BOARD_SIZE],
 };
 
-function cellLabel(cell, code, chip, locked, playable, removing) {
+function cellLabel(cell, code, chip, locked, playable, removing, { hardCorner, hidden } = {}) {
   const where = cellName(cell);
-  const what = code === FREE ? 'free corner' : cardLabel(code);
+  // "free corner" would be a false statement under hard corners, and this label is
+  // the whole board for a player who cannot see it — the ☆ has to be readable too.
+  //
+  // A covered space normally names its card, because peeking is one tap away for
+  // everybody and making a screen-reader user issue that tap per space would be
+  // friction for no gain. Memory mode takes the peek away from everybody, so the
+  // label has to go quiet with it: announcing the card here would hand the one
+  // scarce thing in that game to some players and not others — and hand it for
+  // free, which is worse than the sighted board. An uncovered space still names
+  // its card, since that is printed face up for the whole table to see.
+  const what = code === FREE
+    ? (hardCorner ? 'corner, no card printed' : 'free corner')
+    : (hidden && chip != null) ? 'card hidden' : cardLabel(code);
   const who = chip == null ? 'empty' : `${teamTheme(chip).name} chip`;
   const note = locked ? ', in a completed sequence' : '';
   // Whether you can act here is what a sighted player reads instantly off the
@@ -884,7 +1009,29 @@ function gameOverScreen(app, intents) {
 // ---------------------------------------------------------------------------
 // RULES overlay
 // ---------------------------------------------------------------------------
-function rulesOverlay(intents) {
+const NUMBER_WORDS = { 1: 'one', 2: 'two', 3: 'three', 4: 'four', 5: 'five', 6: 'six' };
+
+function winSentence(config) {
+  const n = winTargetFor(config);
+  return `This game takes ${NUMBER_WORDS[n] || n} of them to win.`;
+}
+
+/**
+ * `config` is null when the sheet is opened from the home screen, and then every
+ * line describes the official game. In a game it describes THAT game: a sheet
+ * that teaches a rule the host has changed is actively misleading, and this is the
+ * one screen a confused player goes to.
+ */
+function rulesOverlay(intents, config) {
+  const len = sequenceLengthFor(config);
+  const lenWord = NUMBER_WORDS[len] || String(len);
+  const hardCorners = !!(config && config.hardCorners);
+  const anyChip = !!(config && config.jacksRemoveAny);
+  const strict = !!(config && config.strictSequences);
+  const canPeek = peeksAllowed(config);
+  const showTargets = highlightsOn(config);
+  const house = config ? describeHouseRules(config) : [];
+
   const jack = (glyphs, name, text) => el('div', { class: 'rule-round' },
     el('span', { class: 'rule-short' }, glyphs),
     el('div', {}, el('div', { class: 'rule-name' }, name), el('p', { class: 'rule-text' }, text)));
@@ -921,32 +1068,58 @@ function rulesOverlay(intents) {
       el('button', { class: 'help-btn close', 'aria-label': 'Close', onclick: () => intents.toggleRules() }, '×')),
     el('p', { class: 'tagline' },
       'The board shows every card except the Jacks, printed twice. Play a card, cover a space that matches it, and build ',
-      el('strong', {}, 'five chips in a row'),
+      el('strong', {}, `${lenWord} chips in a row`),
       ' — across, down or diagonally.'),
+
+    house.length
+      ? el('div', {},
+          el('div', { class: 'section-label' }, 'HOUSE RULES THIS GAME'),
+          // Up top, because someone opening this sheet mid-game is usually looking
+          // for exactly the thing that surprised them.
+          el('ul', { class: 'rule-list' },
+            ...house.map((s) => el('li', { class: 'house' }, s))))
+      : null,
 
     el('div', { class: 'section-label' }, 'EACH TURN'),
     el('ul', { class: 'rule-list' },
-      // Worded to hold in both modes: the sheet opens from the home screen too,
-      // where there is no game yet whose setting could be read.
-      el('li', {}, 'Tap a card in your hand, then tap a space that matches it. Matching spaces light up unless the host switched that off.'),
+      // Inside a game the highlight setting is knowable, so say it flatly — the
+      // whole point of this sheet is that it describes THIS game, and a player
+      // opening it because nothing lit up needs an answer, not a hedge. Opened
+      // from the home screen there is no config to read, so the hedge stays:
+      // promising a ring a host may already have turned off is the misleading
+      // kind of help.
+      el('li', {}, 'Tap a card in your hand, then tap a space that matches it. ' + (
+        !config ? 'Matching spaces light up unless the host switched that off.'
+          : showTargets ? 'Matching spaces light up.'
+            : 'Nothing lights up this game — read the board yourself. Tap anyway and you are told why a space is wrong.')),
       el('li', {}, 'The card is discarded and you draw a replacement, then play passes to the left.'),
-      el('li', {}, 'A chip hides the card under it. Tap the chip to see it for a moment, or use Peek cards to open the whole board at once.'),
+      el('li', {}, canPeek
+        ? 'A chip hides the card under it. Tap the chip to see it for a moment, or use Peek cards to open the whole board at once.'
+        : 'A chip hides the card under it, and this game it stays hidden — remembering what got covered is part of the game.'),
       el('li', {}, 'Teammates are never seated next to each other, so play alternates between teams.'),
     ),
 
     el('div', { class: 'section-label' }, 'THE JACKS'),
     el('div', { class: 'rule-rounds' },
       jack('J♦ J♣', 'Two-eyed Jacks — wild',
-        'Place a chip on ANY open space on the board. The strongest card in the game.'),
+        'Place a chip on ANY open space on the board.'
+        + (hardCorners ? ' This game that includes the ☆ corners, which no other card can reach.' : '')
+        + ' The strongest card in the game.'),
       jack('J♠ J♥', 'One-eyed Jacks — remove',
-        'Lift ONE opponent chip off the board. Chips already inside a completed sequence are safe forever.'),
+        `Lift ONE ${anyChip ? 'chip off the board — anyone’s, including your own team’s' : 'opponent chip off the board'}. `
+        + 'Chips already inside a completed sequence are safe forever.'),
     ),
 
     el('div', { class: 'section-label' }, 'SEQUENCES'),
     el('ul', { class: 'rule-list' },
-      el('li', {}, 'Five of your team’s chips in a straight line is a sequence. Two teams race to two sequences; three teams race to one.'),
-      el('li', {}, 'The four ★ corners are free — they count as a chip for every team, so a line through one needs only four real chips.'),
-      el('li', {}, 'A second sequence may reuse at most one chip from your first.'),
+      el('li', {}, `${lenWord[0].toUpperCase()}${lenWord.slice(1)} of your team’s chips in a straight line is a sequence. `
+        + (config ? winSentence(config) : 'Two teams race to two sequences; three teams race to one.')),
+      el('li', {}, hardCorners
+        ? 'The four ☆ corners are NOT free this game. A line through one needs a real chip there, and only a wild Jack can put one down.'
+        : `The four ★ corners are free — they count as a chip for every team, so a line through one needs only ${NUMBER_WORDS[len - 1] || len - 1} real chips.`),
+      el('li', {}, strict
+        ? 'Your sequences may not share a chip at all this game.'
+        : 'A second sequence may reuse at most one chip from your first.'),
     ),
 
     el('div', { class: 'section-label' }, 'DEAD CARDS'),

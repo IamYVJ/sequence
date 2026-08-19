@@ -136,6 +136,9 @@ body {
 .accent { color: var(--accent); }
 .muted { color: var(--muted); }
 .fine { font-size: 13px; color: var(--muted); margin: 0; line-height: 1.5; }
+/* A consequence the host probably did not intend, not an error — same hue as an
+   error, but it never blocks anything. */
+.warn-fine { color: var(--warn); }
 .error-text { color: var(--warn); font-size: 14px; margin: 0; }
 
 /* --- Fields -------------------------------------------------------------- */
@@ -298,9 +301,37 @@ body {
   color: var(--muted);
 }
 .summary-list strong { color: var(--text); font-weight: 600; }
+/* House rules come from one list shared with the move log, where they read as
+   lowercase fragments of a sentence. Capitalise the pill rather than the source,
+   so the log keeps reading as prose. */
+.summary-list li.house { border-color: var(--border); color: var(--text); }
+.summary-list li.house::first-letter,
+.rule-list li.house::first-letter { text-transform: uppercase; }
 
 /* --- Config editor ------------------------------------------------------- */
 .config { display: flex; flex-direction: column; gap: 12px; }
+
+/* Group divider: the label, then a hairline filling the row. */
+.sub-label {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em;
+  color: var(--muted); text-transform: uppercase;
+  margin-top: 6px;
+}
+.sub-label::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
+
+/* Not a .stepper: four segments plus a label do not fit one line on a phone, so
+   the buttons get their own row and are allowed to wrap. */
+.preset {
+  display: flex; flex-direction: column; gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.preset .segmented { flex: 1 1 auto; flex-wrap: wrap; }
+/* A marker, not a control — see presetRow(). */
+.preset .seg.is-custom { cursor: default; }
 .stepper {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   background: var(--surface);
@@ -490,6 +521,14 @@ body {
 .card-face .suit { font-size: 10px; font-size: 3.1cqw; margin-top: 1px; }
 .card-face.red { color: var(--card-red); }
 .free-mark { font-size: 13px; font-size: 4cqw; line-height: 1; }
+/* A corner nobody owns yet. The hollow ☆ already carries it as a shape (see
+   boardGrid); this drops the gold framing too, because gold on this board means
+   "yours for free" and under hard corners it isn't. */
+.cell.corner.hard-corner {
+  background: linear-gradient(170deg, #1c2620, #141d18);
+  color: var(--muted);
+  border-color: var(--border-soft);
+}
 
 /* The chip covers the card but stops short of the cell edges, so the card stock
    still frames it and a covered space stays identifiable at a glance. */

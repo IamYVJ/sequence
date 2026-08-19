@@ -16,7 +16,9 @@ import {
   MAX_PLAYERS, SEATINGS, buildDeck, shuffle, legalTargets, isDeadCard,
   isOneEyedJack, isTwoEyedJack, isJack, newSequencesAt, normalizeConfig,
   validateStart, handSizeFor, sequencesToWinFor, allowedTeamCounts, cleanName,
-  describeSeating, highlightsOn, DEFAULTS,
+  describeSeating, highlightsOn, peeksAllowed, DEFAULTS, LIMITS, RULE_KEYS,
+  PRESETS, presetOf, presetConfig, winTargetFor, sequenceLengthFor,
+  describeHouseRules, claimedCellsFor, SEQUENCE_LENGTH,
 } from '../js/rules.js';
 
 let passed = 0, failed = 0;
@@ -61,11 +63,19 @@ seed(1);
 // Harness helpers
 // ---------------------------------------------------------------------------
 
-function freshGame({ players = 4, numTeams = 2, deadCardsPerTurn = 1, shuffleBoard = false, showTargets = true, start = true } = {}) {
+/**
+ * `players` and `start` are the harness's; everything else is config, so a house
+ * rule can be switched on without this signature growing a parameter per knob.
+ * The four official values are named explicitly rather than left to DEFAULTS, so
+ * a test reading `freshGame({ players: 4 })` can see what it is getting.
+ */
+function freshGame({ players = 4, start = true, ...config } = {}) {
   const eng = new GameEngine();
   eng.addPlayer('host', 'Host', { isHost: true });
   for (let i = 1; i < players; i++) eng.addPlayer('p' + i, 'Player' + i);
-  eng.setConfig({ numTeams, deadCardsPerTurn, shuffleBoard, showTargets });
+  eng.setConfig({
+    numTeams: 2, deadCardsPerTurn: 1, shuffleBoard: false, showTargets: true, ...config,
+  });
   if (start) eng.startGame('host');
   return eng;
 }
@@ -284,6 +294,304 @@ section('Highlights off changes nothing the engine does');
   ok(back.publicState().config.showTargets === false, 'the setting survives a host reload');
   ok(!off.setConfig({ showTargets: true }).ok, 'it cannot be switched once the game is under way');
   ok(DEFAULTS.showTargets === true, 'a host who changes nothing gets the highlights');
+}
+
+// ===========================================================================
+// Every default has to BE the official game. This is the assertion that keeps a
+// house rule from becoming the thing a host gets for changing nothing.
+section('The defaults are the official game');
+{
+  const d = normalizeConfig({}, 4);
+  ok(d.sequenceLength === SEQUENCE_LENGTH, 'five in a row by default');
+  ok(d.sequencesToWin === 0, 'the win target follows the official table by default');
+  ok(d.hardCorners === false, 'corners are free by default');
+  ok(d.strictSequences === false, 'the official one-shared-chip rule by default');
+  ok(d.jacksRemoveAny === false, 'one-eyed Jacks take opponents only by default');
+  ok(d.memoryMode === false, 'chips can be peeked under by default');
+  ok(describeHouseRules(d).length === 0, 'and nothing is announced as a house rule');
+  ok(presetOf(d) === 'classic', 'which is exactly the Classic preset');
+
+  // The tolerant readers exist because restore() rehydrates with Object.assign and
+  // never re-normalises, so a game that started before these keys existed comes
+  // back without them. Missing has to mean official, not falsy-and-therefore-zero.
+  ok(sequenceLengthFor({}) === 5, 'a config with no length reads as five');
+  ok(sequenceLengthFor(undefined) === 5, 'and so does no config at all');
+  ok(sequenceLengthFor({ sequenceLength: 'nonsense' }) === 5, 'a non-numeric length falls back to five');
+  ok(winTargetFor({ numTeams: 2 }) === 2, 'a pre-feature config still races to two');
+  ok(winTargetFor({ numTeams: 3 }) === 1, 'and to one with three teams');
+  ok(peeksAllowed({}) === true, 'a pre-feature config can still peek');
+  ok(peeksAllowed(undefined) === true, 'and a missing config does not crash the board');
+}
+
+// ===========================================================================
+section('House-rule normalisation');
+{
+  ok(normalizeConfig({ sequenceLength: '4' }, 4).sequenceLength === 4, 'a length arrives as a string over the wire');
+  ok(normalizeConfig({ sequenceLength: 9 }, 4).sequenceLength === LIMITS.sequenceLength.max, 'a length above the limit clamps down');
+  ok(normalizeConfig({ sequenceLength: 1 }, 4).sequenceLength === LIMITS.sequenceLength.min, 'and below it clamps up');
+  // The tolerant reader and the normaliser must resolve the same input the same
+  // way, or a value that skipped normalisation would play a different game from
+  // the one the lobby showed.
+  for (const raw of [undefined, null, 'x', 0, 1, 4, 5, 6, 9, '4']) {
+    ok(sequenceLengthFor({ sequenceLength: raw }) === normalizeConfig({ sequenceLength: raw }, 4).sequenceLength,
+      `sequenceLengthFor and normalizeConfig agree on ${JSON.stringify(raw)}`);
+    ok(winTargetFor({ numTeams: 2, sequencesToWin: raw })
+      === winTargetFor(normalizeConfig({ numTeams: 2, sequencesToWin: raw }, 4)),
+      `winTargetFor is stable across normalisation for ${JSON.stringify(raw)}`);
+  }
+  ok(normalizeConfig({ sequencesToWin: 7 }, 4).sequencesToWin === 3, 'the win target clamps high');
+  ok(normalizeConfig({ sequencesToWin: -1 }, 4).sequencesToWin === 0, 'and low, onto the auto sentinel');
+  ok(normalizeConfig({ hardCorners: 'yes' }, 4).hardCorners === true, 'hardCorners coerces to boolean');
+  ok(normalizeConfig({ memoryMode: 1 }, 4).memoryMode === true, 'memoryMode coerces to boolean');
+  ok(RULE_KEYS.every((k) => k in normalizeConfig({}, 4)), 'every rule key survives normalisation');
+  ok(!RULE_KEYS.includes('numTeams'), 'numTeams is seating, not a rule the host tunes');
+
+  // The sentinel exists because _resyncSeating re-normalises on every join and
+  // leave, so numTeams can change under an already-chosen win target. Auto has to
+  // follow it; an absolute number has to be left exactly as the host set it.
+  const auto = freshGame({ players: 4, start: false });
+  ok(auto.sequencesToWin === 2, 'auto reads two for two teams');
+  auto.addPlayer('x1', 'X1'); auto.addPlayer('x2', 'X2');
+  auto.setConfig({ numTeams: 3 });
+  ok(auto.config.numTeams === 3 && auto.sequencesToWin === 1, 'and follows the table to one when a third team appears');
+  auto.setConfig({ sequencesToWin: 3 });
+  ok(auto.sequencesToWin === 3, 'an explicit target overrides the table');
+  auto.addPlayer('x3', 'X3');
+  ok(auto.sequencesToWin === 3, 'and a join does not quietly rewrite it');
+}
+
+// ===========================================================================
+// A preset is only useful if picking one is a complete statement of the rules.
+// The trap it has to avoid: picking Quick after Hard leaving memory mode behind,
+// so a table thinks it is playing Quick and is not.
+section('Presets');
+{
+  ok(presetOf(presetConfig('classic')) === 'classic', 'Classic round-trips');
+  ok(presetOf(presetConfig('quick')) === 'quick', 'Quick round-trips');
+  ok(presetOf(presetConfig('hard')) === 'hard', 'Hard round-trips');
+  ok(PRESETS.every((p) => RULE_KEYS.every((k) => k in presetConfig(p.id))),
+    'every preset states every rule key, so none can inherit a leftover');
+  ok(presetOf({ ...presetConfig('quick'), memoryMode: true }) === null,
+    'tuning one switch away from a preset is Custom, not still that preset');
+  ok(presetOf({ numTeams: 3 }) === 'classic', 'the team count is not part of a preset');
+  ok(presetOf({}) === 'classic', 'and neither is an absent key');
+
+  // Hard is a bundle of affordances, so it must not touch a rule.
+  const hard = presetConfig('hard');
+  ok(sequenceLengthFor(hard) === 5 && winTargetFor({ ...hard, numTeams: 2 }) === 2
+    && !hard.hardCorners && !hard.strictSequences && !hard.jacksRemoveAny,
+    'Hard changes nothing about how the game is won');
+
+  // Picked one after another, through the engine, the way a host actually does it.
+  const eng = freshGame({ players: 4, start: false });
+  eng.setConfig(presetConfig('hard'));
+  ok(presetOf(eng.config) === 'hard', 'the host picks Hard');
+  eng.setConfig(presetConfig('quick'));
+  ok(presetOf(eng.config) === 'quick' && eng.config.memoryMode === false,
+    'then Quick, and Hard leaves nothing behind');
+  eng.setConfig({ deadCardsPerTurn: 0 });
+  ok(presetOf(eng.config) === null, 'one tweak and the row stops claiming a preset');
+  eng.setConfig(presetConfig('classic'));
+  ok(presetOf(eng.config) === 'classic' && eng.config.deadCardsPerTurn === 1,
+    'and Classic puts everything back');
+}
+
+// ===========================================================================
+section('Sequence length is a house rule');
+{
+  const chips = new Array(CELL_COUNT).fill(null);
+  for (const cell of [51, 52, 53, 54]) chips[cell] = 0;
+  ok(newSequencesAt(54, 0, chips, []).length === 0, 'four in a row is nothing by default');
+  ok(newSequencesAt(54, 0, chips, [], { sequenceLength: 4 }).length === 1, 'and a sequence at length 4');
+  chips[55] = 0;
+  ok(newSequencesAt(55, 0, chips, []).length === 1, 'five still wins by default');
+  ok(newSequencesAt(55, 0, chips, [], { sequenceLength: 6 }).length === 0, 'but not at length 6');
+  chips[56] = 0;
+  ok(newSequencesAt(56, 0, chips, [], { sequenceLength: 6 }).length === 1, 'six does');
+
+  ok(windowsThrough(44).length === windowsThrough(44, 5).length, 'the default window length is still five');
+  ok(windowsThrough(44, 4).every((w) => w.length === 4), 'length 4 gives 4-cell windows');
+  ok(windowsThrough(44, 6).every((w) => w.length === 6), 'length 6 gives 6-cell windows');
+  ok(windowsThrough(44, 0).length === windowsThrough(44).length, 'a nonsense length falls back rather than returning nothing');
+
+  // Through the engine: a real four-in-a-row has to actually end the game.
+  const eng = freshGame({ players: 2, sequenceLength: 4, sequencesToWin: 1, hardCorners: true });
+  const me = eng.currentPlayer;
+  for (const cell of [51, 52, 53]) eng.chips[cell] = me.team;
+  setTurnTo(eng, me.id);
+  ok(coverCell(eng, me.id, 54).ok, 'the fourth chip goes down');
+  ok(eng.sequences.length === 1 && eng.sequences[0].cells.length === 4, 'and completes a four-cell sequence');
+  ok(eng.phase === PHASES.GAME_OVER && eng.winner === me.team, 'which wins the game at one sequence');
+}
+
+// ===========================================================================
+// Free corners and a shortened line together make a sequence very cheap, which is
+// the whole reason hardCorners exists as a companion to it.
+section('Hard corners');
+{
+  const chips = new Array(CELL_COUNT).fill(null);
+  for (const cell of [1, 2, 3, 4]) chips[cell] = 0;
+  ok(newSequencesAt(4, 0, chips, []).length === 1, 'a free corner completes a line with only four chips');
+  ok(newSequencesAt(4, 0, chips, [], { hardCorners: true }).length === 0, 'a hard corner does not count for anyone');
+  chips[0] = 0;
+  ok(newSequencesAt(0, 0, chips, [], { hardCorners: true }).length === 1, 'until a chip is actually on it');
+
+  // A corner has no card printed on it, so if it is not free the only card that can
+  // ever reach one is a wild. Otherwise every line through a corner is unwinnable.
+  const layout = CLASSIC_LAYOUT.slice();
+  const view = (config, ch = new Array(CELL_COUNT).fill(null)) => ({
+    layout, cellIndex: buildCellIndex(layout), chips: ch, sequences: [], team: 0, config,
+  });
+  const soft = legalTargets('JD', view({}));
+  ok(soft.length === 96 && !soft.some(isCorner), 'a wild ignores free corners — covering one would waste the card');
+  const hard = legalTargets('JD', view({ hardCorners: true }));
+  ok(hard.length === CELL_COUNT && CORNERS.every((c) => hard.includes(c)),
+    'and can cover all four when they are not free');
+
+  // Sharing: a free corner is a space, so it may be reused by both of a team's
+  // sequences. A hard corner is a chip, so it counts against the allowance.
+  const seq = [{ team: 0, cells: [0, 1, 2, 3, 4] }];
+  ok(claimedCellsFor(seq, 0).has(0) === false, 'a free corner is not one of the team\'s chips');
+  ok(claimedCellsFor(seq, 0, true).has(0) === true, 'a hard corner is');
+
+  // End to end, including the label the host sends back for a refused tap.
+  const eng = freshGame({ players: 2, hardCorners: true });
+  const me = eng.currentPlayer;
+  setTurnTo(eng, me.id);
+  const wild = giveHand(eng, me.id, ['JD']);
+  ok(eng.playCard(me.id, wild[0].id, CORNERS[0]).ok, 'a wild covers a corner in play');
+  ok(eng.chips[CORNERS[0]] === me.team, 'and the chip is really there');
+  setTurnTo(eng, me.id);
+  const plain = giveHand(eng, me.id, [eng.layout[55]]);
+  const refused = eng.playCard(me.id, plain[0].id, CORNERS[1]);
+  ok(!refused.ok && /only a wild Jack/.test(refused.error),
+    'a numbered card is told why the corner refused it, in this game\'s terms');
+
+  // And a corner chip is an ordinary chip: liftable, unless the line locked it.
+  const jack = legalTargets('JS', {
+    ...view({ hardCorners: true }, eng.chips), team: 1,
+  });
+  ok(jack.includes(CORNERS[0]), 'an opponent can lift a chip off a hard corner');
+}
+
+// ===========================================================================
+section('Strict sequences');
+{
+  const chips = new Array(CELL_COUNT).fill(null);
+  for (let cell = 50; cell <= 58; cell++) chips[cell] = 0;
+  const first = [{ team: 0, cells: [50, 51, 52, 53, 54] }];
+  ok(newSequencesAt(58, 0, chips, first).length === 1, 'the official rule allows one shared chip');
+  ok(newSequencesAt(58, 0, chips, first, { strictSequences: true }).length === 0, 'strict allows none');
+
+  // Disjoint lines are still fine under strict — it removes the overlap, not the
+  // second sequence.
+  const wide = new Array(CELL_COUNT).fill(null);
+  for (let cell = 50; cell <= 54; cell++) wide[cell] = 0;
+  for (let cell = 60; cell <= 64; cell++) wide[cell] = 0;
+  ok(newSequencesAt(64, 0, wide, first, { strictSequences: true }).length === 1,
+    'a second sequence sharing nothing is still a sequence');
+
+  const eng = freshGame({ players: 2, strictSequences: true });
+  const me = eng.currentPlayer;
+  for (let cell = 50; cell <= 57; cell++) eng.chips[cell] = me.team;
+  eng.sequences.push({ team: me.team, cells: [50, 51, 52, 53, 54] });
+  setTurnTo(eng, me.id);
+  ok(coverCell(eng, me.id, 58).ok, 'in play, the chip completing the overlapping line goes down');
+  ok(eng.sequences.length === 1, 'but no second sequence is credited');
+  ok(eng.phase === PHASES.PLAY, 'so the game is not over');
+}
+
+// ===========================================================================
+section('Cutthroat Jacks');
+{
+  const chips = new Array(CELL_COUNT).fill(null);
+  chips[44] = 0;   // mine
+  chips[45] = 1;   // theirs
+  const layout = CLASSIC_LAYOUT.slice();
+  const view = (config, sequences = []) => ({
+    layout, cellIndex: buildCellIndex(layout), chips, sequences, team: 0, config,
+  });
+  ok(legalTargets('JS', view({})).join() === '45', 'officially a one-eyed Jack sees opponents only');
+  const any = legalTargets('JS', view({ jacksRemoveAny: true }));
+  ok(any.includes(44) && any.includes(45), 'cutthroat sees its own team\'s chip too');
+
+  // The lock survives, or the ✦ marker would be a lie.
+  const locked = legalTargets('JS', view({ jacksRemoveAny: true }, [{ team: 0, cells: [40, 41, 42, 43, 44] }]));
+  ok(!locked.includes(44), 'but never a chip inside a completed sequence');
+
+  const eng = freshGame({ players: 2, jacksRemoveAny: true });
+  const me = eng.currentPlayer;
+  eng.chips[44] = me.team;
+  setTurnTo(eng, me.id);
+  const jack = giveHand(eng, me.id, ['JS']);
+  const res = eng.playCard(me.id, jack[0].id, 44);
+  ok(res.ok && eng.chips[44] === null, 'and it really lifts your own chip in play');
+
+  // The refusal has to describe the game being played, not the printed rule. It
+  // needs an opponent chip on the board as well, or there would be no legal target
+  // at all and the earlier "nothing can be removed" branch would answer instead.
+  const strict = freshGame({ players: 2 });
+  const actor = strict.currentPlayer;
+  strict.chips[44] = actor.team;
+  strict.chips[45] = actor.team === 0 ? 1 : 0;
+  setTurnTo(strict, actor.id);
+  const j2 = giveHand(strict, actor.id, ['JS']);
+  const no = strict.playCard(actor.id, j2[0].id, 44);
+  ok(!no.ok && /your own team/.test(no.error), 'without the rule, taking your own chip says exactly that');
+  ok(strict.playCard(actor.id, j2[0].id, 45).ok, 'while the opponent chip beside it lifts fine');
+}
+
+// ===========================================================================
+// Memory mode is presentational, and gets the same treatment the highlights got:
+// asserted against the engine rather than described in a comment.
+section('Memory mode changes nothing the engine does');
+{
+  seed(91);
+  const open = freshGame({ players: 4 });
+  seed(91);
+  const blind = freshGame({ players: 4, memoryMode: true });
+  const actor = open.currentPlayer;
+  ok(blind.currentPlayer.id === actor.id, 'the same seed seats the same player first');
+  const a = open.privateStateFor(actor.id);
+  const b = blind.privateStateFor(actor.id);
+  ok(a.hand.map((c) => c.code).join() === b.hand.map((c) => c.code).join(), 'the same hand is dealt');
+  ok(a.hand.every((c, i) => c.targets.join() === b.hand[i].targets.join()), 'with the same legal targets');
+  ok(a.hand.every((c, i) => c.dead === b.hand[i].dead),
+    'and the same dead marks — knowing a card is dead is a rule, not a peek');
+  ok(a.canPass === b.canPass, 'pass is offered on the same terms');
+  ok(blind.publicState().config.memoryMode === true, 'every player is told chips stay hidden');
+  ok(!peeksAllowed(blind.publicState().config), 'so no device offers a peek');
+}
+
+// ===========================================================================
+// A snapshot is what a host reload rebuilds from, and restore() does a plain
+// Object.assign — so anything the host chose has to be inside serialize(), or a
+// reload silently drops the table back to the official game mid-play.
+section('House rules survive a host reload');
+{
+  const custom = {
+    sequenceLength: 6, sequencesToWin: 3, hardCorners: true,
+    strictSequences: true, jacksRemoveAny: true, memoryMode: true,
+    shuffleBoard: true, showTargets: false, deadCardsPerTurn: 0,
+  };
+  const eng = freshGame({ players: 4, ...custom });
+  ok(presetOf(eng.config) === null, 'this is a Custom mix, not a preset');
+  const back = new GameEngine();
+  back.restore(JSON.parse(JSON.stringify(eng.serialize())));
+  for (const key of RULE_KEYS) {
+    ok(back.config[key] === eng.config[key], `${key} survives the reload`);
+  }
+  ok(back.sequencesToWin === 3, 'and the win target comes back with it');
+  ok(sequenceLengthFor(back.config) === 6, 'as does the line length');
+
+  // The house rules are broadcast, not just held by the host: a joiner reading its
+  // own config is the only way its board can draw the right game.
+  const pub = eng.publicState();
+  ok(RULE_KEYS.every((key) => pub.config[key] === eng.config[key]), 'every rule reaches the joiners');
+  ok(describeHouseRules(pub.config).length >= 6, 'and the lobby has something to list for each');
+  ok(eng.log.some((l) => /House rules:/.test(l.text)), 'the move log names them when the game starts');
+  ok(!freshGame({ players: 4 }).log.some((l) => /House rules:/.test(l.text)),
+    'and says nothing at all for an official game');
 }
 
 // ===========================================================================

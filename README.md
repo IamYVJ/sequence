@@ -63,11 +63,61 @@ teams. Player count, team count and hand size come from the official table:
 Two teams race to **two** sequences; three teams race to **one**. Counts not in
 the table (5, 7, 11) can't split into equal teams and are rejected at the lobby.
 
-**Host-configurable before the game starts:** number of teams (when the player
-count allows a choice), whether the board **highlights the spaces** a selected
-card can go (default on), whether to use the classic printed board or a freshly
-**shuffled** one, and how many dead-card swaps are allowed per turn (default 1;
-set 0 to switch swapping off).
+Everything above is the game as it comes in the box, and it is what you get if
+the host changes nothing. The lobby can change any of it — see **Game modes**
+below.
+
+## Game modes
+
+The host sets the rules in the lobby, before the deal. Every player sees the
+choices as they are made, the start log records them, and the in-game rules sheet
+describes *this* game rather than the official one — so nobody has to remember
+which switches were flipped.
+
+Three **presets** set several rules at once:
+
+| Preset | What it is |
+| ------ | ---------- |
+| **Classic** | The game as it comes in the box. |
+| **Quick** | Four in a row, one sequence wins, and the corners are no longer free. |
+| **Hard** | Shuffled board, no highlights, and chips keep the card underneath hidden. |
+
+A preset writes *every* rule, not just the ones it mentions, so switching from
+Hard to Quick can't leave memory mode behind. Touch any individual switch
+afterwards and the row reads **Custom**.
+
+The individual rules, all of which sit under the preset row:
+
+| Rule | Default | What it changes |
+| ---- | ------- | --------------- |
+| **Chips in a row** | 5 | The length of a sequence — 4, 5 or 6. |
+| **Sequences to win** | Auto | Auto follows the official table (two teams need 2, three teams need 1). Set 1–3 to fix it regardless of team count. |
+| **Free corners** | On | Off makes the ★ corners ordinary spaces: they stop counting as everyone's chip, so every line needs a full set of real chips, and a two-eyed Jack may cover one. The corner is drawn ☆ and unframed when this is off. |
+| **Strict sequences** | Off | On means your two sequences may share **no** chip at all, instead of the official at-most-one. |
+| **Cutthroat Jacks** | Off | On lets a one-eyed Jack lift **any** chip, including your own team's. Chips inside a completed sequence stay locked either way. |
+| **Dead-card swaps** | 1 | How many dead cards you may swap per turn; 0 switches swapping off. |
+| **Highlight matching spaces** | On | Off stops the board pointing at the answer (see below). |
+| **Shuffle the board** | Off | On deals a fresh random layout instead of the classic printed one. |
+| **Memory mode** | Off | On means chips never reveal what is under them: no tap-to-peek, no **Peek cards**, no free reveal when you hold a one-eyed Jack, and the screen reader says "card hidden" instead of naming it. You have to remember which cards are gone. |
+
+Two of these interact, and the lobby says so on screen rather than quietly fixing
+it for you: **four in a row with free corners** means a line through a corner
+needs only three real chips, which is very fast. Turn free corners off if you
+pick length 4 — which is exactly what the Quick preset does.
+
+**Sequences to win** stays on *Auto* by default for a reason: the team count is
+re-derived every time somebody joins or leaves the lobby, so a number you fixed
+while there were four players could quietly contradict the official table once a
+fifth arrived. Auto follows the table; an explicit 1–3 overrides it and stays put.
+
+One honest limit on memory mode: the move feed still names the last handful of
+plays, including which card went where. It keeps only the most recent 14 lines,
+so it is short-term table talk rather than a transcript — over a full game you
+are still remembering, not reading.
+
+Whatever the host picks, every player's rules sheet describes **that** game — the
+line length, who the Jacks can hit, whether the corners are free — so nobody is
+reading the official rules for a game that isn't being played.
 
 Turning the highlights off is a house rule about what the app tells you, never
 about what it allows: the engine computes the same legal moves either way. What
@@ -89,7 +139,9 @@ the board anyway.
 - **One source of truth for legal moves:** `legalTargets()` in
   [`js/rules.js`](js/rules.js) is used both by the engine to validate a move and
   by the view to highlight spaces, so what you can tap and what the host accepts
-  can never drift apart.
+  can never drift apart. The house rules ride along the same seam — the config
+  travels inside the board view object, so a rule reaches validation, the
+  highlights and the "can this player move at all?" check together or not at all.
 - **Signaling caveat:** PeerJS needs to reach a signaling *broker* once to set up
   the WebRTC handshake; after that, game traffic is direct P2P on the LAN. The
   default broker is PeerJS's public cloud (needs internet for that initial
@@ -114,8 +166,10 @@ the board anyway.
   PageUp/PageDown to the ends of a column — and every space announces its
   coordinate, card, occupant, locked state and whether you can act there.
   Selecting a card parks the cursor on its first legal space. Both of those last
-  two track the highlight setting rather than legality, so a table playing without
-  highlights is playing the same game on every device. Chips carry a shape
+  two track the highlight setting rather than legality, and in memory mode a
+  covered space announces "card hidden" rather than naming the card — so a table
+  playing a house rule is playing the same game on every device, and the rule
+  never hands the withheld thing to some players for free. Chips carry a shape
   as well as a colour — plain, a bar, a centre dot — and the scoreboard dots
   repeat the same marks, so the board has a legend beside it and hue is never the
   only signal. The rules sheet is a modal dialog that traps Tab, closes on Escape
@@ -141,8 +195,9 @@ sw.js                   service worker — precaches the shell, cache-first
 css/styles.css          dark card-table theme (ivory board on felt)
 js/
   board.js              ← the 10x10 board: classic layout, shuffled layout,
-                          cell naming and the 5-cell line geometry
+                          cell naming and the line geometry (length is a knob)
   rules.js              ← ALL game-rule constants (cards, seating, limits) +
+                          the house-rule defaults, limits and presets +
                           pure logic (legal targets, dead cards, sequences)
   state.js              host-authoritative game engine / state machine
   net.js                PeerJS networking (BROKER_CONFIG lives at the top)

@@ -14,7 +14,7 @@ import {
   describePeerError, isFatalPeerError, peerIdForCode,
 } from './net.js';
 import { render } from './ui.js';
-import { highlightsOn } from './rules.js';
+import { highlightsOn, peeksAllowed } from './rules.js';
 import {
   generateRoomCode, normalizeCode, copyText, CODE_LENGTH,
   loadName, saveName, loadCode, saveCode,
@@ -626,6 +626,10 @@ const intents = {
   // Tapping the same space again shuts it immediately, so a mis-tap doesn't have
   // to be sat out.
   peekAt: (cell) => {
+    // Memory mode has no peeking. ui.js already withholds the control, but the
+    // rule belongs on the intent too: this is the one place that could reveal a
+    // covered card, so a caller that forgets should be refused rather than obeyed.
+    if (!peeksAllowed(app.pub && app.pub.config)) return;
     const same = app.peekCell === cell;
     clearPeek();
     app.error = '';
@@ -644,6 +648,7 @@ const intents = {
   // Holds every chip open at once. This is the one that answers "are both spaces
   // for this card gone?", which a space-at-a-time peek makes into ten taps.
   togglePeekAll: () => {
+    if (!peeksAllowed(app.pub && app.pub.config)) return;
     const on = !app.peekAll;
     clearPeek();
     app.peekAll = on;
