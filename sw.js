@@ -11,10 +11,22 @@
 // See js/net.js for self-hosting a broker on the LAN.
 // ============================================================================
 
-// Bump this version to invalidate old caches on the next activate. You should
-// rarely need to: same-origin assets are stale-while-revalidate, so a redeploy
-// heals itself (see the fetch handler).
-const CACHE = 'localsequence-v2';
+// Bump this version to invalidate old caches on the next activate.
+//
+// Usually you don't need to: same-origin assets are stale-while-revalidate, so a
+// redeploy heals itself (see the fetch handler). The EXCEPTION — and the reason this
+// is v3 — is a release that changes the module import graph. Re-installing over a
+// live cache rewrites SHELL entry by entry, so a page loading during that window can
+// pull a new main.js against an old config.js and die on a missing export, with a
+// blank screen until the next reload. A new cache name is built to one side and
+// swapped in whole at activate, which cannot half-apply.
+//
+// So: change what modules import from each other -> bump this.
+//
+// v4: js/guards.js was added, and net.js, intents.js and main.js all import it. A
+// half-applied install here is exactly the failure above — a new net.js against a
+// cache with no guards.js at all.
+const CACHE = 'localsequence-v4';
 
 // Core app shell (same-origin). Relative to the SW's scope.
 //
@@ -33,6 +45,8 @@ const SHELL = [
   './js/rules.js',
   './js/board.js',
   './js/net.js',
+  './js/intents.js',
+  './js/guards.js',
   './js/util.js',
   './js/config.js',
   './icons/icon.svg',
@@ -74,11 +88,13 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(req.url);
 
-  // A future server's liveness probe must reflect the live server, never a
+  // The optional server's liveness probe must reflect the live server, never a
   // cached result — otherwise the first "online" response would be replayed
-  // after the server went down, making a dead server look reachable. Skipping
-  // respondWith passes it straight to the network so a real failure rejects.
-  if (url.pathname.endsWith('/health')) return;
+  // after the server went down, making a dead server look reachable and stranding
+  // the app in server mode. Skipping respondWith passes it straight to the network
+  // so a real failure rejects. Same for the room list, which is live data.
+  // See SERVER_HEALTH / SERVER_ROOMS in js/config.js.
+  if (url.pathname.endsWith('/health') || url.pathname.endsWith('/rooms')) return;
 
   const isFont =
     url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com';

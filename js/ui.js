@@ -33,31 +33,41 @@ export function render(root, app, intents) {
     // this the only escape is a page reload.
     case 'connecting': node = infoScreen(
                                 app.reconnecting ? 'Reconnecting…' : 'Connecting…',
-                                app.reconnecting
-                                  ? `Looking for room ${app.code} again.`
-                                  : `Reaching room ${app.code}.`,
+                                connectingBody(app),
                                 true,
                                 el('button', { class: 'btn btn-ghost', onclick: intents.cancelJoin }, '✕ CANCEL')); break;
     case 'error':      node = errorScreen(app, intents); break;
-    case 'hostleft':   node = infoScreen('Host left', 'The host ended the game. Thanks for playing.', false,
-                                          el('button', { class: 'btn btn-secondary', onclick: intents.goHome }, '‹ BACK HOME')); break;
+    // Same dead end, two different causes: peer-to-peer means the host's device is
+    // gone and the game with it, whereas on the server the game is very likely still
+    // there and it is this connection that failed — so the advice differs.
+    case 'hostleft':   node = app.mode === 'server'
+                                ? infoScreen('Disconnected',
+                                    `Lost the connection to the server and couldn't get it back. The game may still be running — rejoin with code ${app.code}.`,
+                                    false,
+                                    el('div', { class: 'btn-row' },
+                                      el('button', { class: 'btn btn-primary', onclick: () => intents.joinServerRoom(app.code) }, '↻ REJOIN'),
+                                      el('button', { class: 'btn btn-secondary', onclick: intents.goHome }, '‹ BACK HOME')))
+                                : infoScreen('Host left', 'The host ended the game. Thanks for playing.', false,
+                                    el('button', { class: 'btn btn-secondary', onclick: intents.goHome }, '‹ BACK HOME')); break;
     case 'game':       node = gameScreen(app, intents); break;
     default:           node = homeScreen(app, intents);
   }
   root.appendChild(node);
   // Sits above whatever screen is showing, so a mid-game drop keeps the board
   // visible underneath instead of yanking the player to a spinner.
-  if (app.reconnecting && app.screen === 'game') root.appendChild(reconnectBanner());
+  if (app.reconnecting && app.screen === 'game') root.appendChild(reconnectBanner(app));
   else if (app.netWarning) root.appendChild(netBanner(app, intents));
   // The config, when there is a game to read one from — the sheet also opens from
   // the home screen, where the only honest thing to describe is the official game.
   if (app.showRules) root.appendChild(rulesOverlay(intents, app.pub && app.pub.config));
 }
 
-function reconnectBanner() {
+function reconnectBanner(app) {
   return el('div', { class: 'reconnect-banner', role: 'status', 'aria-live': 'polite' },
     el('span', { class: 'spinner spinner-sm' }),
-    el('span', {}, 'Lost the host — reconnecting…'),
+    el('span', {}, app.mode === 'server'
+      ? 'Lost the server — reconnecting…'
+      : 'Lost the host — reconnecting…'),
   );
 }
 
@@ -125,12 +135,57 @@ function homeScreen(app, intents) {
       el('button', { class: 'btn btn-primary', onclick: () => intents.host() }, '+ HOST GAME'),
       el('button', { class: 'btn btn-secondary', onclick: () => intents.gotoJoin() }, '▷ JOIN GAME'),
     ),
+    serverOption(app, intents),
     el('button', { class: 'link-btn', 'data-focus': 'help-link', onclick: () => intents.toggleRules() }, 'How to play'),
-    el('p', { class: 'fine' },
-      'Plays peer-to-peer in your browser on the same Wi-Fi. Everyone plays on their own device, so nobody sees your hand. No accounts, no servers.'),
+    el('p', { class: 'fine' }, homeBlurb(app)),
     app.online ? null : el('p', { class: 'error-text' },
       'You are offline. The first handshake needs internet, even though the app itself is cached.'),
   );
+}
+
+// The second way to host, offered ONLY when a server is configured and answering.
+//
+// 'off' means js/config.js names no server, and then this returns null and the home
+// screen is byte-for-byte what it was before server mode existed. 'down' is a
+// configured server that isn't there — worth one quiet line, because the player may
+// know how to switch it on, and because silence would look like a bug.
+function serverOption(app, intents) {
+  const st = (app.server && app.server.state) || 'off';
+  if (st === 'off') return null;
+
+  if (st === 'unknown' || st === 'checking') {
+    return el('p', { class: 'fine server-note' },
+      el('span', { class: 'dot dot-wait' }), 'Checking for the online server…');
+  }
+  if (st === 'down') {
+    return el('p', { class: 'fine server-note' },
+      el('span', { class: 'dot dot-off' }),
+      'The online server isn’t reachable, so games run browser-to-browser.');
+  }
+  return el('div', { class: 'server-option' },
+    el('button', {
+      class: 'btn btn-ghost btn-wide',
+      'data-focus': 'host-online',
+      onclick: () => intents.hostOnline(),
+    }, '⬢ HOST ONLINE'),
+    el('p', { class: 'fine server-note' },
+      el('span', { class: 'dot dot-on' }),
+      'Server’s up — players can join from anywhere, and the game survives you closing this tab.'),
+  );
+}
+
+// The wording here is deliberately narrower than it used to be. This text once said
+// "no server involved at all" and "no servers", and both were false: PeerJS uses a
+// public broker to introduce two browsers, and falls back to a public relay when a
+// direct connection can't be made (see js/net.js). What is actually true — and is
+// the thing a player cares about — is that no server ever holds the CARDS. So the
+// claim is about the game state, not about the absence of infrastructure, and
+// Wi-Fi is described as the good case rather than a requirement.
+function homeBlurb(app) {
+  const up = app.server && app.server.state === 'up';
+  return up
+    ? 'HOST GAME plays peer-to-peer between browsers, and works best when everyone is on the same Wi-Fi. There is no game server in that mode, so the cards never leave the players’ devices. HOST ONLINE puts the game on the server instead, so players anywhere can join. Either way everyone plays on their own device, so nobody sees your hand. No accounts.'
+    : 'Plays peer-to-peer between browsers, and works best when everyone is on the same Wi-Fi. Everyone plays on their own device, so nobody sees your hand, and the cards never leave the players’ devices. No accounts.';
 }
 
 // ---------------------------------------------------------------------------
@@ -155,8 +210,12 @@ function joinScreen(app, intents) {
   return shell(
     wordmark(intents),
     el('h1', { class: 'hero hero-sm' }, 'Join a game'),
-    el('p', { class: 'tagline' }, 'Pick a game on your ', el('span', { class: 'accent' }, 'Wi-Fi'), ' — or enter a code.'),
+    el('p', { class: 'tagline' },
+      (app.serverRooms && app.serverRooms.length)
+        ? el('span', {}, 'Pick a game ', el('span', { class: 'accent' }, 'online'), ' or on your Wi-Fi — or enter a code.')
+        : el('span', {}, 'Pick a game on your ', el('span', { class: 'accent' }, 'Wi-Fi'), ' — or enter a code.')),
     el('div', { class: 'field-group' }, nameInput),
+    ...serverRoomsSection(app, intents),
     el('div', { class: 'section-label' }, 'GAMES ON THIS NETWORK'),
     discoveryList(app, intents, nameInput),
     el('div', { class: 'section-label' }, 'OR ENTER A CODE'),
@@ -167,6 +226,43 @@ function joinScreen(app, intents) {
       el('button', { class: 'btn btn-secondary', onclick: intents.goHome }, '‹ BACK'),
     ),
   );
+}
+
+// Open lobbies on the server. Returns an ARRAY so the caller can splat nothing at
+// all into the screen when there is no server — the join screen then has exactly the
+// shape it had before server mode existed, with no empty heading left behind.
+//
+// Deliberately silent when the list is empty or unavailable: typing a code always
+// works, and a "no online games" line on every visit would be noise on a device that
+// has never used the server.
+function serverRoomsSection(app, intents) {
+  const rooms = app.serverRooms;
+  if (!Array.isArray(rooms) || rooms.length === 0) return [];
+
+  const nameInput = () => {
+    const node = document.querySelector('[data-focus="name"]');
+    return node ? node.value : (app.me.name || '');
+  };
+
+  return [
+    el('div', { class: 'section-label' }, 'GAMES ONLINE'),
+    el('ul', { class: 'game-list' },
+      ...rooms.map((r) => el('li', {},
+        el('button', {
+          class: 'game-row game-row-online',
+          onclick: () => intents.joinServerRoom(r.code, nameInput()),
+        },
+          el('span', { class: 'game-code' }, r.code),
+          el('span', { class: 'game-meta' },
+            el('span', { class: 'game-host' }, (r.hostName || 'Host') + '’s game'),
+            el('span', { class: 'game-sub' },
+              `${r.playerCount} ${r.playerCount === 1 ? 'player' : 'players'} in lobby · on the server`),
+          ),
+          el('span', { class: 'game-go' }, '▷'),
+        ),
+      )),
+    ),
+  ];
 }
 
 function discoveryList(app, intents, nameInput) {
@@ -209,6 +305,20 @@ function discoveryList(app, intents, nameInput) {
   );
 }
 
+// What the waiting screen says while a connection is being made. The room code is
+// the natural thing to name, but there isn't always one: hosting online mints the
+// code on the SERVER and it only arrives with `welcome`, so until then there is no
+// room to reach — just a request in flight.
+function connectingBody(app) {
+  if (app.reconnecting) return `Looking for room ${app.code} again.`;
+  if (app.mode === 'server') {
+    return app.code
+      ? `Reaching room ${app.code} on the game server.`
+      : 'Setting up a new room on the game server.';
+  }
+  return `Reaching room ${app.code}.`;
+}
+
 function infoScreen(title, body, spinner, ...extra) {
   return shell(
     plainMark(),
@@ -249,7 +359,10 @@ function gameScreen(app, intents) {
 // ---------------------------------------------------------------------------
 function lobbyScreen(app, intents) {
   const pub = app.pub;
-  const isHost = app.me.isHost;
+  // isOwner, not isHost: on the server nobody's browser holds the engine, so the
+  // room's owner is a client like everyone else — and the controls have to follow the
+  // person, not the engine. In peer-to-peer they are the same device.
+  const isHost = app.me.isOwner;
   const canStart = pub.startCheck.ok;
 
   const children = [
@@ -300,8 +413,16 @@ function lobbyScreen(app, intents) {
 }
 
 function codeCard(app, intents) {
+  // Which transport this room is on changes who can use the code — the same four
+  // characters mean "get on this Wi-Fi" or "open the site anywhere" — so the card
+  // that hands the code out is the right place to say so.
+  const online = app.mode === 'server';
   return el('div', { class: 'code-card', title: 'Tap to copy', onclick: () => intents.copyCode && intents.copyCode() },
-    el('div', { class: 'code-label' }, 'ROOM CODE'),
+    el('div', { class: 'code-label' },
+      'ROOM CODE',
+      el('span', { class: 'code-mode' + (online ? ' code-mode-online' : '') },
+        online ? '⬢ ONLINE' : '⌂ WI-FI'),
+    ),
     el('div', { class: 'code-value' }, app.code || '----'),
     el('div', { class: 'code-hint' }, app.copied ? 'COPIED ✓' : 'TAP TO COPY'),
   );
@@ -960,7 +1081,7 @@ function moveLog(pub) {
 }
 
 function hostBar(app, intents) {
-  if (!app.me.isHost) {
+  if (!app.me.isOwner) {
     return el('div', { class: 'btn-row' },
       el('button', { class: 'btn btn-ghost', onclick: intents.goHome }, 'LEAVE'));
   }
@@ -993,7 +1114,7 @@ function hostBar(app, intents) {
 // ---------------------------------------------------------------------------
 function gameOverScreen(app, intents) {
   const pub = app.pub;
-  const isHost = app.me.isHost;
+  const isHost = app.me.isOwner;
   const won = pub.winner != null;
   const theme = won ? teamTheme(pub.winner) : null;
   const iWon = won && app.priv && app.priv.team === pub.winner;

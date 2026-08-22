@@ -61,6 +61,55 @@ export function saveName(n) { try { localStorage.setItem(NAME_KEY, n); } catch (
 export function loadCode()  { try { return localStorage.getItem(CODE_KEY) || ''; } catch (_) { return ''; } }
 export function saveCode(c) { try { localStorage.setItem(CODE_KEY, c); } catch (_) {} }
 
+// --- Device identity -------------------------------------------------------
+//
+// A random secret that identifies THIS BROWSER to whichever machine is running
+// the game, and the only thing a seat in progress is ever bound to.
+//
+// Why it has to be a secret and not the display name: anyone on the internet can
+// reach a 4-character room code and type any name they like, so a seat that can be
+// reclaimed by naming it can be stolen by naming it. That was once thought to be a
+// server-only problem, on the grounds that a peer-to-peer host only hears from the
+// same Wi-Fi. It doesn't — PeerJS signalling is a public broker and the data
+// channel can fall back to a public relay — so BOTH transports send this and both
+// require it mid-game. See js/state.js (addPlayer) and server/session.js.
+//
+// It is therefore treated like a credential: never rendered, never logged, never
+// put in a URL, and never sent to anything but the game host itself.
+//
+// The character class matches validClientId() in js/guards.js exactly (8-64 of
+// [A-Za-z0-9_-]), so a value that would be refused cannot be generated here, and a
+// value that has somehow been tampered with in localStorage is replaced rather
+// than sent.
+const CLIENT_KEY = 'localsequence.clientId';
+const CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+
+// Used only when localStorage is unavailable (private browsing, storage denied).
+// A per-tab identity still lets a socket that blips reclaim its own seat; it just
+// doesn't survive a reload, which is the best that can be done without storage.
+let volatileClientId = null;
+
+function newClientId() {
+  const bytes = new Uint8Array(16);
+  (globalThis.crypto || window.crypto).getRandomValues(bytes);
+  let out = '';
+  for (const b of bytes) out += b.toString(16).padStart(2, '0');
+  return out;   // 32 hex characters
+}
+
+export function clientId() {
+  try {
+    const stored = localStorage.getItem(CLIENT_KEY);
+    if (stored && CLIENT_ID_RE.test(stored)) return stored;
+    const fresh = newClientId();
+    localStorage.setItem(CLIENT_KEY, fresh);
+    return fresh;
+  } catch (_) {
+    if (!volatileClientId) volatileClientId = newClientId();
+    return volatileClientId;
+  }
+}
+
 // --- Session resume (reload / rejoin returns to the same game) -------------
 // We remember whether this device was hosting or joining, the room code and the
 // player name, plus (for a host) a snapshot of the authoritative engine so a host

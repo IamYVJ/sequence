@@ -6,18 +6,32 @@
 //           connection the public state plus that player's own hand.
 //   CLIENT: holds the last public+private snapshot received from the host and
 //           sends intents over the wire.
+//
+// There are two transports, and the CLIENT half above is the same code for both:
+//
+//   p2p    — WebRTC via PeerJS. One browser is the host. Works on a plane.
+//   server — WebSocket to an authoritative server. NO browser is the host, so even
+//            the room's owner is a client here.
+//
+// Peer-to-peer is the default and the fallback, and nothing about it changed to make
+// room for the second transport. Server mode exists only if js/config.js names a
+// server AND a live health probe answers; otherwise not one pixel of it is drawn.
 // ============================================================================
 
 import { GameEngine } from './state.js';
 import {
   createHost, joinHost, createDiscovery,
   describePeerError, isFatalPeerError, peerIdForCode,
+  serverTransport, probeServer, fetchServerRooms, describeServerRejection,
 } from './net.js';
 import { render } from './ui.js';
+import { applyGameIntent } from './intents.js';
+import { validClientId } from './guards.js';
 import { highlightsOn, peeksAllowed } from './rules.js';
+import { SERVER_URL, SERVER_HEALTH, SERVER_ROOMS, serverConfigured } from './config.js';
 import {
   generateRoomCode, normalizeCode, copyText, CODE_LENGTH,
-  loadName, saveName, loadCode, saveCode,
+  loadName, saveName, loadCode, saveCode, clientId,
   saveSession, loadSession, clearSession, saveEngineSnapshot, loadEngineSnapshot,
 } from './util.js';
 
@@ -28,7 +42,18 @@ const root = document.getElementById('app');
 // ---------------------------------------------------------------------------
 const app = {
   screen: 'home',              // home | join | connecting | game | error | hostleft
-  me: { id: null, name: loadName(), isHost: false },
+
+  // Which transport is carrying this game.
+  //   'p2p'    — WebRTC star, one browser owns the engine (the original mode).
+  //   'server' — WebSocket to the authoritative server; NO browser owns an engine.
+  mode: 'p2p',
+
+  // isHost means "this tab runs the engine", and it is what routes an intent
+  // locally instead of over the wire. isOwner means "this player holds the room's
+  // controls". They are the same person in p2p and different things on the server,
+  // where the owner is a client like anyone else — so every control in the UI is
+  // gated on isOwner, and only sendIntent looks at isHost.
+  me: { id: null, name: loadName(), isHost: false, isOwner: false },
   code: loadCode(),
   pub: null,
   priv: null,
@@ -44,6 +69,14 @@ const app = {
   // Local-network game discovery (Join screen).
   discovered: [],
   discoveryState: 'idle',      // idle | searching | ok | unsupported
+
+  // The optional server. 'off' means no endpoint is configured at all, and the UI
+  // then shows nothing server-shaped anywhere — the app is the static P2P game it
+  // has always been. Every other value comes from a live /health probe, so a server
+  // that is unplugged is never offered.
+  server: { state: serverConfigured() ? 'unknown' : 'off', version: '' },
+  // Open lobbies on the server (Join screen). null = no list to be had.
+  serverRooms: null,
 
   // Board interaction — purely local, never sent anywhere. Selecting a card
   // lights up the spaces it may legally go on.
@@ -90,6 +123,16 @@ const JOIN_TIMEOUT = 12000;
 function clearJoinTimer() {
   if (joinTimer) { clearTimeout(joinTimer); joinTimer = null; }
 }
+
+// Server-mode runtime.
+//
+// What a reconnect must do next. A room is created ONCE: if the owner's socket
+// blips, retrying with createRoom would open a second, empty room and abandon the
+// game — so this remembers to come back with `join`, which is what reclaims the
+// existing seat via the device's clientId.
+let serverIntent = null;   // { code, name, create } — create only ever true first time
+let roomsTimer = null;     // Join-screen poll for the open-lobby list
+const ROOMS_POLL_MS = 5000;
 
 // A single-space peek closes itself, so it needs a cancellable timer: tapping a
 // second chip must not inherit the first tap's expiry and shut early.
@@ -260,13 +303,22 @@ function handleIntent(playerId, msg) {
 
 function dispatchIntent(playerId, msg) {
   if (!msg || typeof msg.type !== 'string') return;
+
+  // Identity and connection lifecycle are this transport's business — a peer id
+  // is not a server seat — so they stay here rather than in the shared module.
   switch (msg.type) {
     case 'lobbyQuery':
       net.sendTo(playerId, { type: 'lobbyInfo', info: engine.lobbyInfo(app.me.name) });
-      break;
+      return;
 
     case 'join': {
-      const r = engine.addPlayer(playerId, msg.name, { isHost: false });
+      // A malformed clientId is dropped rather than rejected: it costs the sender
+      // its claim on a seat, which is the sender's problem, and an old client that
+      // sends none at all still gets to play.
+      const r = engine.addPlayer(playerId, msg.name, {
+        isHost: false,
+        clientId: validClientId(msg.clientId),
+      });
       if (!r.ok) { net.sendTo(playerId, { type: 'rejected', message: r.error }); return; }
       // A reconnect reclaimed a seat under a new connection id. Drop the old,
       // now-orphaned connection so it can't later fire a disconnect against the
@@ -274,32 +326,19 @@ function dispatchIntent(playerId, msg) {
       if (r.reconnected && r.prevId && r.prevId !== playerId) net.dropConnection(r.prevId);
       net.sendTo(playerId, { type: 'welcome', playerId });
       hostSync();
-      break;
-    }
-
-    case 'playCard': {
-      const r = engine.playCard(playerId, msg.cardId, msg.cell);
-      if (!r.ok) rejectTo(playerId, r.error);
-      hostSync();
-      break;
-    }
-
-    case 'exchangeDead': {
-      const r = engine.exchangeDeadCard(playerId, msg.cardId);
-      if (!r.ok) rejectTo(playerId, r.error);
-      hostSync();
-      break;
-    }
-
-    case 'pass': {
-      const r = engine.pass(playerId);
-      if (!r.ok) rejectTo(playerId, r.error);
-      hostSync();
-      break;
+      return;
     }
 
     default: break;
   }
+
+  // Everything else is a game intent, and goes through the same dispatcher the
+  // server uses — so the two authoritative hosts cannot disagree about what a
+  // message means. The owner guard lives in there too.
+  const { handled, result } = applyGameIntent(engine, playerId, msg);
+  if (!handled) return;
+  if (!result.ok) rejectTo(playerId, result.error);
+  hostSync();
 }
 
 // ---------------------------------------------------------------------------
@@ -344,15 +383,22 @@ function startHosting() {
   if (!name) { app.screen = 'home'; app.error = 'Enter a name first.'; draw(); return; }
 
   stopDiscovery();
+  stopRoomsPoll();
   saveName(name);
   const code = generateRoomCode();
+  app.mode = 'p2p';
   app.code = code; saveCode(code);
   app.me.id = peerIdForCode(code);
   app.me.isHost = true;
+  app.me.isOwner = true;
   app.error = '';
 
   engine = new GameEngine();
-  engine.addPlayer(app.me.id, name, { isHost: true });
+  // The host's own seat is bound to its clientId as well. The host's peer id is
+  // derived from the room code, so it is the one seat an outsider could guess the
+  // id of — and binding it means a snapshot that outlives this tab still knows
+  // which device the owner was.
+  engine.addPlayer(app.me.id, name, { isHost: true, clientId: clientId() });
 
   saveSession({ mode: 'host', code, name });
   hostReady = false;
@@ -364,9 +410,11 @@ function startHosting() {
 
 // Rehydrate a game in progress after a HOST reload, re-using the same code.
 function resumeHosting(code, snapshot, name) {
+  app.mode = 'p2p';
   app.code = code; saveCode(code);
   app.me.id = peerIdForCode(code);
   app.me.isHost = true;
+  app.me.isOwner = true;
   app.me.name = name || app.me.name;
   app.error = '';
 
@@ -395,10 +443,13 @@ function startJoining(rawCode, rawName, { reconnect = false } = {}) {
   }
 
   stopDiscovery();
+  stopRoomsPoll();
   if (!reconnect) clearReconnect();
+  app.mode = 'p2p';
   app.me.name = name; saveName(name);
   app.code = code; saveCode(code);
   app.me.isHost = false;
+  app.me.isOwner = false;
   app.error = '';
   // On a retry keep the last board on screen behind the reconnect banner —
   // dropping to a spinner mid-game loses the player's place at the table.
@@ -420,7 +471,9 @@ function startJoining(rawCode, rawName, { reconnect = false } = {}) {
   }
 
   net = joinHost(code, {
-    onOpen: () => net.send({ type: 'join', name }),
+    // The clientId travels on the peer transport too, not just to the server: it
+    // is what gets this device — and only this device — its seat back mid-game.
+    onOpen: () => net.send({ type: 'join', name, clientId: clientId() }),
     onData: (msg) => {
       switch (msg.type) {
         case 'welcome':
@@ -470,6 +523,204 @@ function giveUpJoining(message) {
   app.screen = 'error';
   app.error = message;
   draw();
+}
+
+// ---------------------------------------------------------------------------
+// SERVER MODE — the same game, carried by a WebSocket to an authoritative server.
+//
+// Structurally this is the JOINING path for everybody, owner included: no browser
+// holds a GameEngine here, so app.me.isHost stays false and every tap — including
+// the owner's lobby controls — travels over the wire through the untouched
+// sendIntent(). What the owner gets instead is app.me.isOwner, which is only ever
+// used to decide what to DRAW.
+//
+// Identity is the device's clientId, not the name typed on the home screen. That is
+// the whole reason a seat can't be stolen on a public endpoint, and it is why a
+// reconnect can reclaim a hand mid-game without the server trusting anything the
+// reconnecting socket says about who it is. See server/session.js.
+// ---------------------------------------------------------------------------
+function startServerGame({ create = false, code = '', name = '', reconnect = false } = {}) {
+  const clean = (name || '').trim();
+  if (!clean) {
+    app.error = 'Enter a name first.';
+    app.screen = create ? 'home' : 'join';
+    draw(); return;
+  }
+  const roomCode = create ? '' : normalizeCode(code);
+  if (!create && roomCode.length !== CODE_LENGTH) {
+    app.error = `Enter the full ${CODE_LENGTH}-character code.`;
+    app.screen = 'join'; draw(); return;
+  }
+
+  stopDiscovery();
+  stopRoomsPoll();
+  if (!reconnect) clearReconnect();
+
+  app.mode = 'server';
+  app.me.name = clean; saveName(clean);
+  // Never true on this transport: the engine is on the Pi, so there is nothing in
+  // this tab for an intent to be applied to.
+  app.me.isHost = false;
+  if (!reconnect) app.me.isOwner = false;
+  // A create has no code until the server mints one and sends it back in `welcome`.
+  // Blank it rather than leaving the previous game's code in state, or the waiting
+  // screen would name a room this attempt has nothing to do with.
+  if (roomCode) { app.code = roomCode; saveCode(roomCode); }
+  else if (!reconnect) app.code = '';
+  app.error = '';
+  serverIntent = { code: roomCode, name: clean, create: !!create };
+
+  if (!reconnect || !app.pub) app.screen = 'connecting';
+  draw();
+
+  // Same deadline as the peer-to-peer join, and for the same reason: a socket that
+  // hangs rather than failing leaves the player watching 'Connecting…' with nothing
+  // to do. A reconnect has its own bounded retry loop and keeps the board up.
+  clearJoinTimer();
+  if (!reconnect) {
+    joinTimer = setTimeout(() => {
+      joinTimer = null;
+      if (app.pub) return;
+      giveUpJoining("The game server didn't answer. It may be switched off — you can still host a game over Wi-Fi.");
+    }, JOIN_TIMEOUT);
+  }
+
+  net = serverTransport(SERVER_URL, {
+    onOpen: () => {
+      app.server.state = 'up';
+      // createRoom happens once, ever. Every retry after that is a join, or the
+      // owner's blip would open a second empty room and orphan the real game.
+      if (create) net.send({ type: 'createRoom', name: clean, clientId: clientId() });
+      else net.send({ type: 'join', code: app.code, name: clean, clientId: clientId() });
+    },
+    onData: (msg) => handleServerMessage(msg),
+
+    // app.pub marks "we were in a real game", exactly as on the peer path.
+    onClose: ({ everOpened }) => {
+      if (app.pub) { scheduleReconnect(); return; }
+      if (!everOpened) app.server.state = 'down';
+      giveUpJoining(everOpened
+        ? 'The server closed the connection before the game started.'
+        : "Couldn't reach the game server. It may be switched off — you can still host a game over Wi-Fi.");
+    },
+    onError: () => { /* a close always follows, and that is where we decide */ },
+  });
+}
+
+function handleServerMessage(msg) {
+  switch (msg.type) {
+    case 'welcome':
+      app.me.id = msg.playerId;
+      app.me.isOwner = !!msg.owner;
+      if (msg.code) { app.code = msg.code; saveCode(app.code); }
+      // The room exists from here on, so a later retry must join it.
+      if (serverIntent) serverIntent = { ...serverIntent, code: app.code, create: false };
+      saveSession({ mode: 'server', code: app.code, name: app.me.name });
+      break;
+
+    case 'state':
+      clearJoinTimer();
+      clearReconnect();
+      app.pub = msg.pub; app.priv = msg.priv;
+      app.screen = 'game';
+      draw();
+      break;
+
+    case 'rejected':
+      handleServerRejection(msg);
+      break;
+
+    case 'error':
+      app.error = msg.message || '';
+      draw();
+      break;
+
+    // lobbyInfo exists for the peer transport's per-code probe. On the server the
+    // /rooms list does that job for every room at once, so there is nothing to do.
+    default: break;
+  }
+}
+
+// A refusal is fatal to THIS attempt — the server closes the socket behind it.
+function handleServerRejection(msg) {
+  const reason = msg && msg.reason;
+  const wanted = serverIntent;
+  clearReconnect();
+  teardownNet();
+  app.mode = 'p2p';
+
+  // The server has never heard of this code — but a host on this Wi-Fi might have
+  // it. Falling through to the peer-to-peer join is what lets ONE join button cover
+  // both kinds of game, so a player never has to know which one their host is
+  // running. Only for a code the player actually typed, and only before we had a
+  // game: a mid-game 'no-room' means the room was swept, not misaddressed.
+  if (reason === 'no-room' && wanted && wanted.code && !app.pub) {
+    startJoining(wanted.code, wanted.name);
+    return;
+  }
+
+  clearSession();
+  app.pub = null; app.priv = null;
+  app.me.isOwner = false;
+  app.screen = 'join';
+  app.error = describeServerRejection(reason, msg && msg.message);
+  startDiscovery();
+  refreshServerRooms();
+  draw();
+}
+
+// ---------------------------------------------------------------------------
+// Is the server there? Asked once at boot, and again whenever the answer could
+// have changed. Every server-shaped control in the UI is gated on the result, so a
+// Pi that is off, missing or unreachable is simply not offered — which is what
+// keeps the app honest about being a static peer-to-peer game by default.
+// ---------------------------------------------------------------------------
+// The in-flight probe, so two callers can await one request rather than racing two.
+let serverProbe = null;
+
+function checkServer() {
+  if (!serverConfigured()) { app.server.state = 'off'; return Promise.resolve(); }
+  if (serverProbe) return serverProbe;
+  app.server.state = 'checking';
+  draw();
+  serverProbe = (async () => {
+    const info = await probeServer(SERVER_HEALTH);
+    app.server.state = info ? 'up' : 'down';
+    app.server.version = (info && info.version) || '';
+    serverProbe = null;
+    draw();
+  })();
+  return serverProbe;
+}
+
+// Open lobbies on the server, polled while the Join screen is up.
+//
+// Codes are not secrets, and this list hands them out — see the note on
+// RoomManager#joinable() in server/rooms.js. It is offered because the public
+// PeerJS broker has enumeration disabled, so on the server this list is the only
+// way to find a game without being told the code.
+function refreshServerRooms() {
+  stopRoomsPoll();
+  if (!serverConfigured()) return;
+
+  const tick = async () => {
+    roomsTimer = null;
+    const rooms = await fetchServerRooms(SERVER_ROOMS);
+    // The player left while the request was in flight.
+    if (app.screen !== 'join') return;
+    app.serverRooms = rooms;
+    if (rooms) app.server.state = 'up';
+    draw();
+    // Stop on null rather than retrying: that is a server which is down or has the
+    // list switched off, and neither is worth a request every few seconds. The
+    // health probe already tells the player which it is.
+    if (rooms) roomsTimer = setTimeout(tick, ROOMS_POLL_MS);
+  };
+  tick();
+}
+
+function stopRoomsPoll() {
+  if (roomsTimer) { clearTimeout(roomsTimer); roomsTimer = null; }
 }
 
 // ---------------------------------------------------------------------------
@@ -533,12 +784,17 @@ function teardownNet() {
 }
 
 // ---------------------------------------------------------------------------
-// CLIENT: reconnect after the host's connection drops.
+// CLIENT: reconnect after the connection drops. Both transports.
 //
-// The host's peer id is derived from the room code, so a host that reloads or
-// blips off Wi-Fi comes back at the SAME address — and rejoining by name
-// reclaims the seat and the hand. So a dropped connection is worth retrying
-// before telling the player their game is over.
+// P2P: the host's peer id is derived from the room code, so a host that reloads or
+// blips off Wi-Fi comes back at the SAME address — and rejoining by name reclaims
+// the seat and the hand.
+//
+// SERVER: the address never moves, and the seat is reclaimed by this device's
+// clientId rather than its name.
+//
+// Either way a dropped connection is worth retrying before telling the player their
+// game is over.
 // ---------------------------------------------------------------------------
 function scheduleReconnect() {
   if (reconnectTimer) return;
@@ -555,6 +811,12 @@ function scheduleReconnect() {
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     teardownNet();
+    // Note the absent `create`: a returning owner rejoins the room it already made.
+    // The server hands the seat back on the strength of this device's clientId.
+    if (app.mode === 'server') {
+      startServerGame({ code: app.code, name: app.me.name, reconnect: true });
+      return;
+    }
     startJoining(app.code, app.me.name, { reconnect: true });
   }, delay);
 }
@@ -566,9 +828,16 @@ function clearReconnect() {
 }
 
 // ---------------------------------------------------------------------------
-// Intents handed to the view. Player intents route through sendIntent (the host
-// applies locally; clients send over the wire). Host-only controls drive the
-// engine directly and re-broadcast.
+// Intents handed to the view.
+//
+// EVERY intent — a player's tap and an owner's control alike — goes through this
+// one function, and the only thing that varies is who is holding the engine. A
+// peer-to-peer host applies its own messages locally; everyone else, including
+// the owner of a game running on the server, sends them over the wire.
+//
+// That uniformity is the point of the server mode: on the server nobody's browser
+// runs an engine, so "the host" is just the player whose seat the engine calls
+// hostId, and their controls have to travel like any other message.
 // ---------------------------------------------------------------------------
 function sendIntent(msg) {
   app.error = '';
@@ -576,31 +845,33 @@ function sendIntent(msg) {
   else if (net) net.send(msg);
 }
 
-function hostControl(fn) {
-  return (...args) => {
-    if (!app.me.isHost || !engine) return;
-    app.error = '';
-    const r = fn(...args);
-    if (r && r.ok === false) app.error = r.error;
-    hostSync();
-  };
-}
-
 const intents = {
   setName: (n) => { app.me.name = n; saveName(n); },
   setCode: (c) => { app.code = normalizeCode(c); saveCode(app.code); },
-  gotoJoin: () => { app.screen = 'join'; app.error = ''; startDiscovery(); draw(); },
+  gotoJoin: () => {
+    app.screen = 'join'; app.error = '';
+    startDiscovery();
+    refreshServerRooms();
+    draw();
+  },
   goHome: () => {
     teardownNet();
     stopDiscovery();
+    stopRoomsPoll();
     clearReconnect();
     clearSession();
     engine = null;
+    serverIntent = null;
     app.screen = 'home';
+    app.mode = 'p2p';
     app.pub = null; app.priv = null; app.error = '';
-    app.me.isHost = false; app.me.id = null;
+    app.me.isHost = false; app.me.isOwner = false; app.me.id = null;
     app.selectedCardId = null;
+    app.serverRooms = null;
     draw();
+    // The Pi may have come up (or gone down) while a game was running, and the
+    // home screen is where that answer is acted on.
+    checkServer();
   },
   // Opening the rules moves the keyboard into the dialog; closing it hands focus
   // back to the control that opened it. Node references don't survive a render,
@@ -657,16 +928,46 @@ const intents = {
   dismissError: () => { app.error = ''; draw(); },
 
   host: () => startHosting(),
-  join: (code, name) => startJoining(code, name),
+  // Host on the server instead of on this device. Only ever offered when the health
+  // probe came back — see app.server in this file and the gating in ui.js.
+  hostOnline: () => startServerGame({ create: true, name: app.me.name }),
+
+  // ONE join button for both kinds of game.
+  //
+  // A player is told a four-character code, not a transport, so we try the server
+  // first when there is one and fall through to the local network if it has never
+  // heard of the code (see handleServerRejection). When no server is configured or
+  // it isn't answering, this is the peer-to-peer join it always was.
+  join: async (code, name) => {
+    // The boot probe may still be in flight. Wait for it rather than guessing: a
+    // peer-to-peer attempt at a server-side code costs the player the full join
+    // timeout before it admits defeat.
+    if (serverConfigured()
+        && (app.server.state === 'unknown' || app.server.state === 'checking')) {
+      app.screen = 'connecting'; app.error = ''; draw();
+      await checkServer();
+      // They gave up while we were asking.
+      if (app.screen !== 'connecting') return;
+    }
+    if (app.server.state === 'up') { startServerGame({ code, name }); return; }
+    startJoining(code, name);
+  },
+  // Join a specific server room from the open-lobby list. No fallback: this code
+  // came from the server itself, so a refusal is about the room, not the transport.
+  joinServerRoom: (code, name) => startServerGame({ code, name: name || app.me.name }),
+
   // Back out of a connection attempt that is going nowhere. Drops the saved
   // session too, so a reload doesn't walk straight back into the same wait.
   cancelJoin: () => {
     clearReconnect();
     teardownNet();
     clearSession();
+    app.mode = 'p2p';
+    app.me.isOwner = false;
     app.screen = 'join';
     app.error = '';
     startDiscovery();
+    refreshServerRooms();
     draw();
   },
   dismissNetWarning: () => { app.netWarning = ''; draw(); },
@@ -679,15 +980,18 @@ const intents = {
     if (ok) setTimeout(() => { app.copied = false; draw(); }, 1500);
   },
 
-  // --- Host lobby + flow controls ---
-  setConfig: hostControl((patch) => engine.setConfig(patch)),
-  movePlayer: hostControl((playerId, dir) => engine.movePlayer(playerId, dir)),
-  randomizeOrder: hostControl(() => engine.randomizeOrder()),
-  startGame: hostControl(() => engine.startGame(app.me.id)),
-  skipTurn: hostControl(() => engine.skipTurn(app.me.id)),
+  // --- Owner lobby + flow controls ---
+  // Ordinary wire messages, not local engine calls: see sendIntent. The engine's
+  // hostId check (and intents.js's guard for the three methods that lack one) is
+  // what makes them owner-only, on either transport.
+  setConfig: (patch) => sendIntent({ type: 'setConfig', patch }),
+  movePlayer: (playerId, dir) => sendIntent({ type: 'movePlayer', playerId, dir }),
+  randomizeOrder: () => sendIntent({ type: 'randomizeOrder' }),
+  startGame: () => sendIntent({ type: 'startGame' }),
+  skipTurn: () => sendIntent({ type: 'skipTurn' }),
   armEndGame: (on) => { app.confirmEnd = !!on; app.error = ''; draw(); },
-  endGame: hostControl(() => engine.endGame(app.me.id)),
-  playAgain: hostControl(() => engine.playAgain(app.me.id)),
+  endGame: () => sendIntent({ type: 'endGame' }),
+  playAgain: () => sendIntent({ type: 'playAgain' }),
 
   // --- Turn actions (per player) ---
   setCursor: (cell) => {
@@ -734,13 +1038,36 @@ function resumeSession() {
     startJoining(s.code, s.name);
     return true;
   }
+  // A server game needs nothing rehydrated locally — the engine never left the Pi.
+  // Rejoining is enough, and the device's clientId is what gets the seat and the
+  // hand back. No fallback to the peer path here: the session says which transport
+  // this game was on.
+  if (s.mode === 'server' && s.name && serverConfigured()) {
+    startServerGame({ code: s.code, name: s.name });
+    return true;
+  }
   return false;
 }
 
 if (!resumeSession()) draw();
 
-window.addEventListener('offline', () => { app.online = false; if (app.screen === 'home') draw(); });
-window.addEventListener('online', () => { app.online = true; if (app.screen === 'home') draw(); });
+// Ask the server whether it exists, once, in the background. Deliberately after the
+// first paint: the home screen must not wait on a network round-trip to a machine
+// that may well be switched off.
+checkServer();
+
+window.addEventListener('offline', () => {
+  app.online = false;
+  // A machine with no network cannot be hosting anything, and saying so at once
+  // beats leaving a stale "online games available" on screen for four seconds.
+  if (app.server.state === 'up' || app.server.state === 'checking') app.server.state = 'down';
+  if (app.screen === 'home') draw();
+});
+window.addEventListener('online', () => {
+  app.online = true;
+  if (app.screen === 'home') { checkServer(); return; }
+  draw();
+});
 
 // Service worker (relative path so it works under a GitHub Pages subpath).
 if ('serviceWorker' in navigator) {

@@ -12,10 +12,12 @@
 // ----------------------------------------------------------------------------
 // SIGNALING / OFFLINE NOTE (read this):
 //   PeerJS needs a "broker" (signaling server) ONCE to perform the WebRTC
-//   handshake. After that, game traffic is direct peer-to-peer over the LAN. The
-//   default broker below is PeerJS's free public cloud, which needs the internet
-//   to be reachable for that initial handshake — even though the cached PWA
-//   shell loads offline.
+//   handshake. After that, game traffic goes device to device (see NAT TRAVERSAL
+//   below for the case where it can't). The default broker is PeerJS's free public
+//   cloud, which needs the internet to be reachable for that initial handshake —
+//   even though the cached PWA shell loads offline. A room code is therefore an
+//   address on a PUBLIC broker, not a LAN-local one: peerIdForCode() is derivable
+//   by anybody.
 //
 //   FOR FULLY-OFFLINE LAN PLAY: run your own PeerServer on the LAN, e.g.
 //       npx peer --port 9000 --key peerjs --path /myapp
@@ -27,21 +29,61 @@
 //   Every device must use the SAME broker config to find each other.
 //
 // ----------------------------------------------------------------------------
-// NAT TRAVERSAL — WHAT THIS DOES NOT DO:
-//   There is no TURN server, and there won't be: a relay needs credentials and a
-//   host to run on, which is exactly the backend this project doesn't have. STUN
-//   (PeerJS ships Google's) is enough to connect devices that CAN reach each
-//   other directly, which covers the design case — everyone on one Wi-Fi.
+// NAT TRAVERSAL — WHAT ACTUALLY HAPPENS:
+//   `opts` below carries no `config`, so PeerJS's DEFAULT iceServers apply. In the
+//   pinned 1.5.4 bundle those are Google's STUN plus TWO PUBLIC TURN RELAYS
+//   (turn:eu-0 / us-0.turn.peerjs.com, with the credentials 'peerjs'/'peerjsp'
+//   baked into the library and shared with every PeerJS app on the internet).
 //
-//   Symmetric NAT, mobile data, "client isolation" / guest Wi-Fi, and some
-//   corporate networks will fail to connect with no error from either side: the
-//   broker says the host exists, and then the media path never comes up. That
-//   silence is why joinHost callers need their own timeout.
+//   So this is NOT LAN-only, and it never was. STUN hole punching connects two
+//   ordinary home routers on different ISPs, and when it fails WebRTC falls back
+//   to relaying through peerjs.com. Keeping the default is a deliberate choice —
+//   connectivity for people not in the same building — with three consequences
+//   that the rest of the code has to be honest about:
+//     1. A room is reachable from anywhere by anyone holding the code. That is why
+//        a seat mid-game belongs to a clientId and not a display name (state.js),
+//        and why the browser host applies the same guards as the server
+//        (js/guards.js) rather than trusting whoever connects.
+//     2. Cross-network ICE shows each player's public IP to the others. Server
+//        mode is the answer for anyone who minds; it uses no WebRTC at all.
+//     3. A relayed game depends on somebody else's infrastructure staying up.
+//        The DataChannel is DTLS-encrypted end to end, so the relay forwards
+//        ciphertext it cannot read — availability is the exposure here, not
+//        confidentiality.
+//
+//   To make this LAN-only, pass `config: { iceServers: [] }` in newPeer(): with no
+//   STUN and no relay only host candidates are gathered, and mDNS candidates
+//   resolve on the local link alone.
+//
+//   Connections still fail: symmetric NAT plus a relay that is blocked or
+//   unreachable, "client isolation" guest Wi-Fi, and some corporate networks give
+//   up with no error from either side — the broker says the host exists, and then
+//   the data channel never comes up. That silence is why joinHost callers need
+//   their own timeout.
 // ============================================================================
+
+import { TokenBucket, decodePeerFrame } from './guards.js';
 
 // Set to null to use PeerJS's default public cloud broker. Replace with an
 // object (see note above) to self-host signaling for offline LAN play.
 export const BROKER_CONFIG = null;
+
+// ---------------------------------------------------------------------------
+// Ceilings for the browser host. The server has the same two ideas with bigger
+// numbers; these are smaller because the machine underneath is somebody's phone.
+//
+// A game needs at most MAX_PLAYERS connections. The rest of this budget is for
+// the churn that is normal and not abuse: a joiner's discovery probe opens a
+// connection just to read the lobby and closes it again, and a reconnecting
+// player's new connection overlaps their dead one until PeerJS notices.
+// ---------------------------------------------------------------------------
+const MAX_HOST_CONNS = 40;
+
+// A refused frame is dropped in silence — replying "too fast" to a flood answers
+// every packet of it, which is the amplification the bucket exists to prevent.
+// Persistent refusal is not a slow client though, it is a script, so the
+// connection goes. Same number the server uses.
+const MAX_REFUSED_FRAMES = 120;
 
 // Peer IDs are namespaced so room codes don't collide with other PeerJS apps
 // sharing the public broker.
@@ -136,21 +178,47 @@ function attachBrokerRecovery(peer, handlers = {}) {
 // ---------------------------------------------------------------------------
 export function createHost(code, handlers = {}) {
   const peer = newPeer(peerIdForCode(code));
-  const connections = new Map(); // connId -> DataConnection
+  const connections = new Map(); // connId -> DataConnection (open, seated or not)
+  const attached = new Set();    // every conn we've accepted, open or still opening
   const recovery = attachBrokerRecovery(peer, handlers);
 
   peer.on('open', () => handlers.onOpen && handlers.onOpen(code));
 
   peer.on('connection', (conn) => {
+    // The ceiling is counted over connections we have ACCEPTED, not ones that
+    // finished opening, or a flood of half-open connections would never be
+    // counted at all.
+    if (attached.size >= MAX_HOST_CONNS) {
+      try { conn.close(); } catch (_) {}
+      return;
+    }
+    attached.add(conn);
+
+    // One bucket per connection, so a flood costs the flooder its own budget and
+    // nobody else's. See js/guards.js for why this is in front of the dispatch.
+    const bucket = new TokenBucket();
+    let refused = 0;
+
     conn.on('open', () => {
       connections.set(conn.peer, conn);
       handlers.onConnect && handlers.onConnect(conn.peer, conn);
     });
     conn.on('data', (raw) => {
-      const msg = safeParse(raw);
-      if (msg) handlers.onData && handlers.onData(conn.peer, msg);
+      const msg = decodePeerFrame(raw);
+      // Junk is dropped silently — answering it would tell a prober that someone
+      // is listening, and cost us a send per frame they can generate.
+      if (!msg) return;
+      if (!bucket.take()) {
+        // A burst is normal (tap a card, tap a space). A client that keeps going
+        // after the bucket is empty is not playing, so it eventually loses the
+        // connection rather than being throttled forever.
+        if (++refused > MAX_REFUSED_FRAMES) { try { conn.close(); } catch (_) {} }
+        return;
+      }
+      handlers.onData && handlers.onData(conn.peer, msg);
     });
     const drop = () => {
+      attached.delete(conn);
       if (connections.has(conn.peer)) {
         connections.delete(conn.peer);
         handlers.onDisconnect && handlers.onDisconnect(conn.peer);
@@ -205,7 +273,10 @@ export function joinHost(code, handlers = {}) {
 
     conn.on('open', () => handlers.onOpen && handlers.onOpen(conn));
     conn.on('data', (raw) => {
-      const msg = safeParse(raw);
+      // Bounded on the way in even though this is "our" host: the code was typed
+      // by a human and reaches whoever holds that peer id on a public broker, so
+      // the thing on the other end is not necessarily the game we meant to join.
+      const msg = decodePeerFrame(raw);
       if (msg) handlers.onData && handlers.onData(msg);
     });
     conn.on('close', () => handlers.onClose && handlers.onClose());
@@ -291,7 +362,7 @@ export function createDiscovery() {
           conn = peer.connect(peerIdForCode(code), { reliable: true });
           conn.on('open', () => trySend(conn, { type: 'lobbyQuery' }));
           conn.on('data', (raw) => {
-            const msg = safeParse(raw);
+            const msg = decodePeerFrame(raw);
             if (msg && msg.type === 'lobbyInfo') finish(msg.info);
           });
           conn.on('error', () => finish(null));
@@ -303,6 +374,156 @@ export function createDiscovery() {
     },
     destroy() { dead = true; recovery.cancel(); try { peer.destroy(); } catch (_) {} },
   };
+}
+
+// ===========================================================================
+// SERVER TRANSPORT — the second way this app can play.
+//
+// Everything above is peer-to-peer and stays exactly as it was. What follows is a
+// plain WebSocket to an authoritative server, and it is deliberately shaped to
+// present the SAME interface as joinHost() above — send / isOpen / destroy, and
+// onOpen / onData / onClose / onError — so main.js can hold either one in `net`
+// and the intent path does not have to know which is which.
+//
+// The asymmetry that remains is real and cannot be papered over: on this transport
+// nobody's browser owns a GameEngine, so even the room's owner is a client sending
+// messages. That is handled in main.js (app.mode), not here.
+// ===========================================================================
+
+/**
+ * Open a socket to the server.
+ *
+ * No reconnect logic in here, on purpose. A dropped socket means something
+ * different depending on whether we had a game yet, and only main.js knows that —
+ * the same division of labour joinHost() already has with its join timeout.
+ */
+export function serverTransport(url, handlers = {}) {
+  let ws;
+  let opened = false;
+  let dead = false;
+
+  try {
+    ws = new WebSocket(url);
+  } catch (err) {
+    // A malformed URL throws synchronously. Report it asynchronously anyway, so
+    // the caller's error path is the same one it uses for every other failure.
+    setTimeout(() => handlers.onError && handlers.onError(err), 0);
+    return { send() {}, isOpen() { return false; }, destroy() {} };
+  }
+
+  ws.onopen = () => { opened = true; handlers.onOpen && handlers.onOpen(); };
+
+  ws.onmessage = (event) => {
+    // Text frames only. The server never sends binary, so anything else is either
+    // a proxy misbehaving or not our server at all.
+    if (typeof event.data !== 'string') return;
+    const msg = safeParse(event.data);
+    if (msg && typeof msg.type === 'string') handlers.onData && handlers.onData(msg);
+  };
+
+  // A browser will not tell a page WHY a WebSocket failed — there is no status
+  // code for a 403 from the origin check, and no distinguishing a refused
+  // handshake from an unplugged router. All the page gets is close. So the useful
+  // signal is `opened`: a socket that never opened at all is a connection problem
+  // to report, and one that opened and then closed is a game to reconnect to.
+  ws.onclose = (event) => {
+    if (dead) return;
+    dead = true;
+    handlers.onClose && handlers.onClose({
+      everOpened: opened,
+      code: event ? event.code : 0,
+      // 1000 is a deliberate close from the server (a redeploy, or a seat taken
+      // over by another device); anything else is a failure.
+      clean: !!(event && event.wasClean),
+    });
+  };
+
+  ws.onerror = () => {
+    // Always followed by close, which is where the decision is made. Swallowing it
+    // here keeps an uninformative event from being reported twice.
+  };
+
+  return {
+    ws,
+    send(msg) {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      try { ws.send(JSON.stringify(msg)); } catch (_) { /* closing */ }
+    },
+    isOpen() { return ws.readyState === WebSocket.OPEN; },
+    destroy() {
+      dead = true;           // stop our own onclose from firing a handler
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+      try { ws.close(1000, 'Left'); } catch (_) {}
+    },
+  };
+}
+
+/**
+ * Is the server there? Resolves to the /health body, or null.
+ *
+ * Deliberately cheap and deliberately timed out: this runs at boot, on the home
+ * screen, before the player has asked for anything — so a Pi that is off must cost
+ * a couple of seconds of a hidden probe and nothing else. Never throws; the caller
+ * only has to distinguish an object from null.
+ */
+export async function probeServer(url, timeoutMs = 4000) {
+  if (!url) return null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body && body.ok ? body : null;
+  } catch (_) {
+    return null;            // offline, aborted, CORS, DNS, a captive portal…
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Open lobbies on the server, or null if there is no list to be had.
+ *
+ * null covers three cases that the UI treats identically: the server is down, the
+ * server has the list switched off (ROOMS_LIST=0, answered as a 404), or the
+ * response was not what we expected. "No list" is not an error worth showing —
+ * typing a code always works.
+ */
+export async function fetchServerRooms(url, timeoutMs = 4000) {
+  if (!url) return null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body && Array.isArray(body.rooms) ? body.rooms : null;
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** What a server refusal means, in words a player can act on. The server sends a
+ *  message of its own for most of these; these are the ones where the client knows
+ *  better, because it knows what the player was trying to do. */
+export function describeServerRejection(reason, message) {
+  switch (reason) {
+    case 'no-room':
+      return 'No game with that code is running on the server.';
+    case 'in-progress':
+      return 'That game has already started, so there is no seat to take. Ask the host to start a rematch.';
+    case 'name-taken':
+      return 'Someone in that game is already using that name — pick another.';
+    case 'server-full':
+      return 'The server has as many games as it can hold. Try again in a few minutes, or host on Wi-Fi instead.';
+    case 'replaced':
+      return 'You opened this game on another device, so this one was disconnected.';
+    default:
+      return message || 'The server refused the connection.';
+  }
 }
 
 // ---------------------------------------------------------------------------

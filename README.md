@@ -2,10 +2,19 @@
 
 A complete, **static** web implementation of the board-and-cards classic
 *Sequence*. One player hosts from their own browser tab; everyone else joins with
-a 4-character code on the same Wi-Fi. All game logic and authoritative state live
-in the host's tab — **no backend, no accounts**. Everyone plays on their own
-device, so your hand stays yours. Installable as a PWA that works offline (app
-shell).
+a 4-character code — easiest when everyone is on the same Wi-Fi, though it isn't
+required. All game logic and authoritative state live in the host's tab — **no
+game server, no accounts** — so the cards never leave the players' devices.
+Everyone plays on their own device, so your hand stays yours. Installable as a PWA
+that works offline (app shell).
+
+There is an **optional** second way to play: point the app at a small
+self-hosted server and the same game runs over the internet instead, so players
+don't have to share a network and nobody's tab has to stay open. It is strictly
+additive — [`js/config.js`](js/config.js) is the only thing that makes it exist,
+and with no server configured (or with the server switched off) the app is
+exactly the peer-to-peer game described above. See
+[**Playing over the internet**](#playing-over-the-internet-optional-server).
 
 ## How to play
 
@@ -138,6 +147,12 @@ the board anyway.
 - **Networking:** WebRTC peer-to-peer via [PeerJS](https://peerjs.com/). Star
   topology, **host-authoritative**: the host owns all state, validates every
   intent, and sends each player the public board plus **only their own hand**.
+- **One engine, two transports.** Every tap becomes the same little intent object
+  (`{ type: 'playCard', … }`), and the only question is where it is applied:
+  in the host's own tab, or on a server across a WebSocket. Both sides route it
+  through the same dispatcher in [`js/intents.js`](js/intents.js) against the same
+  [`js/state.js`](js/state.js) engine, so there is no second implementation of the
+  rules to keep in step — the server literally imports the browser's engine.
 - **Room codes:** the friendly 4-char code maps directly to the host's Peer ID
   (`localsequence-v1-<CODE>`), so joiners reconstruct it from the code — no
   discovery service needed.
@@ -148,18 +163,31 @@ the board anyway.
   travels inside the board view object, so a rule reaches validation, the
   highlights and the "can this player move at all?" check together or not at all.
 - **Signaling caveat:** PeerJS needs to reach a signaling *broker* once to set up
-  the WebRTC handshake; after that, game traffic is direct P2P on the LAN. The
+  the WebRTC handshake; after that, game traffic goes device to device. The
   default broker is PeerJS's public cloud (needs internet for that initial
   handshake). To play **fully offline on a LAN**, run your own broker and point
   the app at it — see [`js/net.js`](js/net.js) (`BROKER_CONFIG`). Losing the
   broker mid-game is survivable and says so on screen: existing connections are
   device-to-device, so only *new* joins stop working while the app retries.
-- **No relay, so: same Wi-Fi.** There is no TURN server — a relay needs
-  credentials and somewhere to run, which is the backend this project doesn't
-  have. STUN alone connects devices that can reach each other directly, which is
-  the design case. Symmetric NAT, mobile data and "client isolation" guest Wi-Fi
-  will fail to connect with no error from either end, which is why a join attempt
-  gives up after 12s and offers **Cancel** rather than spinning forever.
+- **Wi-Fi is the reliable case, not the only one.** Nothing restricts a game to
+  one network. The broker is public, so a room code is an address anyone can
+  reach; STUN hole punching then connects players on different ISPs, and PeerJS's
+  default relays cover most of what's left. What Wi-Fi buys you is *certainty* —
+  "client isolation" guest networks and some corporate NATs still fail with no
+  error from either end, which is why a join attempt gives up after 12s and
+  offers **Cancel** rather than spinning forever. The optional server is the
+  answer to that case, and it works by not using WebRTC at all: every client
+  holds an ordinary WebSocket to it, so hostile NAT stops being anybody's
+  problem.
+- **A room is reachable from the internet, so it is guarded like it.** Both
+  authoritative hosts — the browser tab and the server — apply the same bounds
+  from [`js/guards.js`](js/guards.js) (per-connection rate limit, connection
+  ceiling, frame size and shape) and the same identity rule from
+  [`js/state.js`](js/state.js): mid-game a seat belongs to the joiner's secret
+  `clientId`, never to the name printed above it. Two things a peer-to-peer game
+  still exposes that server mode doesn't: cross-network WebRTC shows players each
+  other's public IP addresses, and a relayed game passes through infrastructure
+  that isn't yours (encrypted end to end, so it is forwarded and not read).
 - **Reconnect:** rejoining with the same name and code reclaims your seat and
   your hand, and a host reload rehydrates the in-progress game from a saved
   snapshot. Because the host's Peer ID is derived from the room code, a host that
@@ -190,14 +218,62 @@ the board anyway.
    **Connect**.
 3. Once the lobby holds a supported player count, the host taps **Deal & Start**.
 
-> Everyone must be reaching the same URL 
+> Everyone must be reaching the same URL — share the link, not a screenshot of
+> the code.
+
+## Playing over the internet (optional server)
+
+Peer-to-peer has two limits that no amount of client code can fix: a direct
+connection between two devices sometimes cannot be made at all, and the game lives
+in the host's tab, so closing it ends the game. The optional server removes both. It is a small Node process —
+four files, one dependency (`ws`) — that keeps rooms in memory and **imports the
+browser's own game engine**, so it is the same rules, the same board, the same
+house-rule switches, just applied on a machine that nobody has to keep a tab open
+on.
+
+### How the app decides which one to use
+
+1. At boot the app probes the server once, with a 4-second timeout. Nothing about
+   server mode is drawn until that answers.
+2. If it answers, the home screen grows a **⬢ Host Online** button and the join
+   screen lists open rooms on the server under **Games online**.
+3. If it doesn't — no server configured, the server is down, no internet — the app
+   says games run over Wi-Fi only and behaves exactly as it always did.
+4. **Join** is one button for both kinds of game. A typed code is tried on the
+   server first when the server is up; if the server has no such room, the app
+   falls through to a peer-to-peer join on the same code. Players never have to
+   know which sort of game they were invited to.
+
+In server mode the room code carries a **⬢ Online** badge, and in Wi-Fi mode a
+**⌂ Wi-Fi** one, so it is always visible on screen which transport is in play.
+
+### What changes when the server is running the game
+
+- **Nobody is the host.** The player who created the room is its *owner* — they
+  get the lobby controls and the end-game buttons — but no browser holds the
+  engine, so the owner closing their tab doesn't end anything. They rejoin and
+  their hand is still there.
+- **Identity is the device, not the name.** Each browser mints a random
+  `clientId` on first run and keeps it in `localStorage`, and that is what reclaims
+  a seat mid-game — on both transports, since a peer-to-peer room is reachable
+  from the internet too. It never appears in the URL or on screen. The server
+  additionally enforces it outside the engine, so its own seat map never depends on
+  the engine getting it right.
+- **Rooms expire.** Six hours idle, or 15 minutes with nobody in them, and the
+  room is gone. Nothing is written to disk, ever — a restart is a clean slate.
+- **A drop looks like a reconnect.** Losing the socket keeps the board on screen
+  behind a *Lost the server — reconnecting…* banner and retries for ~30s, the same
+  as losing a peer-to-peer host. A server restarting therefore looks like a blip
+  rather than an ending.
 
 ## Project layout
 
 ```
 index.html              app shell (loads PeerJS + fonts, registers SW)
 manifest.webmanifest    PWA manifest (relative paths)
-sw.js                   service worker — precaches the shell, cache-first
+sw.js                   service worker — precaches the shell, stale-while-
+                          revalidate (never caches the server probes, so a dead
+                          server can't look alive from cache)
 css/styles.css          dark card-table theme (ivory board on felt)
 js/
   board.js              ← the 10x10 board: classic layout, shuffled layout,
@@ -206,16 +282,36 @@ js/
                           the house-rule defaults, limits and presets +
                           pure logic (legal targets, dead cards, sequences)
   state.js              host-authoritative game engine / state machine
-  net.js                PeerJS networking (BROKER_CONFIG lives at the top)
+  intents.js            ← the one intent dispatcher, shared by the browser host
+                          and the server, so the rules can't fork
+  guards.js             ← the bounds on anything from another device (rate limit,
+                          frame shape, id and patch validation) — also shared,
+                          because both hosts face the same internet
+  net.js                both transports: PeerJS (BROKER_CONFIG at the top) and
+                          the WebSocket client + the server liveness and room
+                          list probes
   ui.js                 rendering (pure view layer)
-  util.js               helpers (room code, clipboard, persistence, DOM)
-  config.js             placeholder server-mode switch (unused in this build)
+  util.js               helpers (room code, clipboard, persistence, clientId, DOM)
+  config.js             ← the server-mode switch: blank the URLs and server mode
+                          does not exist
   main.js               controller wiring net + engine + UI together
+server/                 the OPTIONAL authoritative server (nothing else needs it)
+  index.js              HTTP endpoints + WebSocket bootstrap
+  guards.js             origin allowlist, rate limit, frame validation (no deps)
+  rooms.js              room registry, codes, ceilings and expiry
+  session.js            seats, clientId identity and mid-game reclaim
+  smoke.mjs             end-to-end checks over real sockets (see its header)
+  Dockerfile            container image definition
+  compose.yaml          container configuration
 icons/                  app icons (svg + generated png)
 scripts/
   gen-icons.js          regenerates the PNG icons (node, no deps)
   test-engine.mjs       headless tests — game engine end to end, plus net.js's
                           broker recovery against a stub peer
+  test-server.mjs       headless tests — the wire protocol, the security guards
+                          and a whole game played over a stub socket
+.github/workflows/
+  server.yml            CI for the server image
 package.json            npm test / npm run icons (no dependencies)
 ```
 

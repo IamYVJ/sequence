@@ -66,24 +66,59 @@ export class GameEngine {
   /**
    * Seat a player, or hand a seat back to someone reconnecting.
    *
-   * Reclaim is by display NAME, which is safe here because the P2P host is a
-   * trusted peer running the real game — there is no untrusted lobby to spoof a
-   * name into. (An authoritative server must NOT do this mid-game: see the
-   * clientId rule in the server platform playbook.)
+   * WHO OWNS A SEAT
+   *   A seat in progress belongs to a `clientId` — a random string the joining
+   *   device keeps in its own localStorage and never shows on screen — and not to
+   *   the display name above it. The name is how humans find each other; it is
+   *   not a credential, because everyone at the table can see it.
+   *
+   *   This used to reclaim by name alone, on the reasoning that a P2P host only
+   *   ever hears from the same room. That was wrong: PeerJS signalling is a public
+   *   broker and the data channel can fall back to a public relay, so a browser
+   *   host is reachable by anyone holding a 4-character code. "Type Alice's name
+   *   into her game while her phone is asleep, and be dealt her hand" has to be
+   *   impossible rather than unlikely, and it has to be impossible on both
+   *   transports, so the rule lives in the engine both of them share.
+   *
+   *   In the LOBBY a name reclaim is still allowed: there are no hands yet, so the
+   *   worst case is a seat, and a device that has genuinely lost its clientId
+   *   (cleared storage, new browser) can still get back in before the deal.
+   *
+   *   A seat with no clientId recorded is one from before this rule, or from the
+   *   host's own tab; it binds the first clientId it is offered instead of being
+   *   locked out of its own game by a snapshot restore.
    */
   addPlayer(id, name, { isHost = false, clientId = null } = {}) {
     const clean = cleanName(name);
     if (!clean) return { ok: false, error: 'Enter a name first.' };
 
-    const existing = this.players.find((p) => p.name.toLowerCase() === clean.toLowerCase());
+    // The clientId is checked first and on its own: a returning device is entitled
+    // to its seat even if it comes back under a different display name, and that
+    // lookup must not be reachable by choosing a name.
+    const owned = clientId ? this.players.find((p) => p.clientId === clientId) : null;
+    const named = this.players.find((p) => p.name.toLowerCase() === clean.toLowerCase());
+    const existing = owned || named;
+
     if (existing) {
       if (existing.online && existing.id !== id) {
+        return { ok: false, error: 'Someone in this game is already using that name.' };
+      }
+      // Mid-game, a seat that knows whose it is may only be reclaimed by that
+      // device. Refused as "already using that name" rather than "wrong device":
+      // an attacker learns nothing from it, and the honest case that lands here —
+      // two people who typed the same name — is exactly what it says.
+      if (this.phase !== PHASES.LOBBY && existing !== owned
+          && existing.clientId && existing.clientId !== clientId) {
         return { ok: false, error: 'Someone in this game is already using that name.' };
       }
       const prevId = existing.id;
       if (prevId !== id) this._remapPlayerId(prevId, id);
       existing.online = true;
       if (clientId) existing.clientId = clientId;
+      // A reclaim by clientId may arrive under a new name, and the table should
+      // show the name the device is actually using — but only if it is free.
+      // Two identical names at one table is a worse outcome than a stale one.
+      if (!named || named === existing) existing.name = clean;
       if (isHost) { existing.isHost = true; this.hostId = id; }
       return { ok: true, reconnected: true, prevId };
     }

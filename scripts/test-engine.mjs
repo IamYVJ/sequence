@@ -8,6 +8,10 @@
 // broker recovery, against a stub peer and fake timers.
 
 import { GameEngine, PHASES } from '../js/state.js';
+import { applyGameIntent } from '../js/intents.js';
+import {
+  TokenBucket, decodePeerFrame, MAX_FRAME_BYTES, MAX_TYPE_LEN,
+} from '../js/guards.js';
 import {
   BOARD_SIZE, CELL_COUNT, CORNERS, FREE, CLASSIC_LAYOUT, BOARD_CARD_CODES,
   buildCellIndex, randomLayout, cellName, windowsThrough, isCorner,
@@ -1001,6 +1005,154 @@ section('Reconnect');
   ok(hostBack.ok && hostBack.reconnected, 'the host reclaims their seat');
   ok(eng.hostId === 'host-new', 'host rights moved to the new connection');
   ok(eng.skipTurn('host-new').ok, 'the reconnected host can still act as host');
+}
+
+// ===========================================================================
+section('Seat ownership — a display name is not a credential');
+{
+  // A game as the transports now build one: every seat bound to the secret
+  // clientId of the device sitting in it. The seats in freshGame() deliberately
+  // have none, so the tests above cover the other half of this rule — a seat from
+  // an older snapshot, which must not be locked out of its own game.
+  const owned = () => {
+    const eng = new GameEngine();
+    eng.addPlayer('host', 'Host', { isHost: true, clientId: 'host-device' });
+    eng.addPlayer('p1', 'Alice', { clientId: 'alice-device' });
+    eng.addPlayer('p2', 'Bob', { clientId: 'bob-device' });
+    eng.addPlayer('p3', 'Carol', { clientId: 'carol-device' });
+    eng.setConfig({ numTeams: 2, deadCardsPerTurn: 1, shuffleBoard: false, showTargets: true });
+    eng.startGame('host');
+    return eng;
+  };
+
+  // The attack this closes: Alice's phone sleeps, and someone holding the
+  // four-character code types her name and is dealt her hand.
+  {
+    const eng = owned();
+    const hand = eng.hands.p1.map((c) => c.id).join();
+    eng.markOffline('p1');
+
+    ok(!eng.addPlayer('intruder', 'Alice').ok,
+      'mid-game, a name with no clientId cannot reclaim a seat');
+    ok(!eng.addPlayer('intruder', 'Alice', { clientId: 'intruder-device' }).ok,
+      'mid-game, the wrong clientId cannot reclaim a seat');
+    ok(!eng.addPlayer('intruder', 'alice', { clientId: 'intruder-device' }).ok,
+      'and case-folding the name does not get around it');
+    ok(eng.getPlayer('p1').online === false, 'the refused attempts left the seat away');
+    ok(eng.hands.p1.map((c) => c.id).join() === hand, 'and left the hand where it was');
+    ok(!eng.hands.intruder, 'the intruder was never dealt anything');
+    ok(eng.players.length === 4, 'and never took a seat');
+
+    const right = eng.addPlayer('p1-again', 'Alice', { clientId: 'alice-device' });
+    ok(right.ok && right.reconnected, 'the owning device still gets the seat back');
+    ok(eng.hands['p1-again'].map((c) => c.id).join() === hand, 'with its own cards');
+  }
+
+  // An online seat is not up for grabs whatever you know about it.
+  {
+    const eng = owned();
+    ok(!eng.addPlayer('intruder', 'Alice', { clientId: 'alice-device' }).ok,
+      'a seat whose player is connected cannot be taken over');
+  }
+
+  // Identity is the device, so the name on it may change.
+  {
+    const eng = owned();
+    eng.markOffline('p1');
+    const r = eng.addPlayer('p1-again', 'Alicia', { clientId: 'alice-device' });
+    ok(r.ok && r.reconnected, 'the owning device may come back under a new name');
+    ok(eng.getPlayer('p1-again').name === 'Alicia', 'and the table shows the name in use');
+    ok(eng.players.length === 4, 'still no extra seat');
+  }
+
+  // ...but not to one somebody else is using.
+  {
+    const eng = owned();
+    eng.markOffline('p1');
+    const r = eng.addPlayer('p1-again', 'Bob', { clientId: 'alice-device' });
+    ok(r.ok, 'the seat comes back');
+    ok(eng.getPlayer('p1-again').name === 'Alice', 'under its old name, not a taken one');
+    ok(eng.players.filter((p) => p.name === 'Bob').length === 1, 'so there is still one Bob');
+  }
+
+  // A seat with no owner recorded binds the first device that claims it, and is
+  // owned from then on.
+  {
+    const eng = owned();
+    delete eng.getPlayer('p1').clientId;
+    eng.markOffline('p1');
+
+    const first = eng.addPlayer('p1-again', 'Alice', { clientId: 'alice-new-device' });
+    ok(first.ok, 'an unowned seat accepts a reclaim by name');
+    ok(eng.getPlayer('p1-again').clientId === 'alice-new-device', 'and binds that device to it');
+
+    eng.markOffline('p1-again');
+    ok(!eng.addPlayer('intruder', 'Alice', { clientId: 'someone-else' }).ok,
+      'after which the name alone stops working');
+  }
+
+  // The lobby is exempt: there are no hands to steal yet, and a device that has
+  // lost its clientId must still be able to get back in before the deal.
+  {
+    const eng = new GameEngine();
+    eng.addPlayer('host', 'Host', { isHost: true, clientId: 'host-device' });
+    eng.addPlayer('p1', 'Alice', { clientId: 'alice-device' });
+    eng.getPlayer('p1').online = false;   // a dropout the lobby has not swept yet
+    const back = eng.addPlayer('p1-new', 'Alice', { clientId: 'alice-fresh-browser' });
+    ok(back.ok && back.reconnected, 'in the lobby a name reclaim still works');
+    ok(eng.getPlayer('p1-new').clientId === 'alice-fresh-browser', 'and rebinds the seat');
+  }
+}
+
+// ===========================================================================
+section('Peer frames are bounded before they are believed');
+{
+  ok(decodePeerFrame('{"type":"pass"}').type === 'pass', 'a normal frame parses');
+  ok(decodePeerFrame('not json at all') === null, 'junk text is refused');
+  ok(decodePeerFrame('[1,2,3]') === null, 'an array is not a message');
+  ok(decodePeerFrame('{"nope":1}') === null, 'an object with no type is not a message');
+  ok(decodePeerFrame('null') === null, 'JSON null is not a message');
+  ok(decodePeerFrame(JSON.stringify({ type: 'x'.repeat(MAX_TYPE_LEN + 1) })) === null,
+    'an absurdly long type is refused');
+  ok(decodePeerFrame(`{"type":"pass","pad":"${'x'.repeat(MAX_FRAME_BYTES)}"}`) === null,
+    'an oversized frame is refused on its length, before being parsed');
+  ok(decodePeerFrame({ type: 'pass' }).type === 'pass',
+    'an object from a binary serializer is accepted');
+  ok(decodePeerFrame(new ArrayBuffer(8)) === null, 'binary is refused');
+  ok(decodePeerFrame(new Uint8Array(8)) === null, 'so is a view onto binary');
+  ok(decodePeerFrame(null) === null && decodePeerFrame(undefined) === null,
+    'and nothing at all is not a message');
+
+  // The bucket is the server's, exercised here because the browser host now uses
+  // the same one — a burst of real play must pass, a script must not.
+  const bucket = new TokenBucket({ capacity: 5, refillPerSec: 1, now: 0 });
+  let allowed = 0;
+  for (let i = 0; i < 50; i++) if (bucket.take(0)) allowed++;
+  ok(allowed === 5, 'a flood inside one instant costs exactly the bucket');
+  ok(bucket.take(1000) === true, 'and a second later there is a token again');
+}
+
+// ===========================================================================
+section('The setup patch is bounded for both transports');
+{
+  const eng = freshGame({ players: 4, start: false });
+
+  const huge = {};
+  for (let i = 0; i < 40; i++) huge['key' + i] = i;
+  const flood = applyGameIntent(eng, 'host', { type: 'setConfig', patch: huge });
+  ok(flood.handled && !flood.result.ok, 'a patch with too many keys is refused, not spread');
+
+  for (const junk of [null, undefined, 'numTeams=3', 42, [], {}]) {
+    const r = applyGameIntent(eng, 'host', { type: 'setConfig', patch: junk });
+    ok(r.handled && !r.result.ok, `a ${typeof junk} patch is refused`);
+  }
+
+  // A knob with no arithmetic behind it: numTeams would be clamped to what the
+  // player count can actually split into, which is a different rule being tested
+  // elsewhere and would hide whether the patch arrived at all.
+  const real = applyGameIntent(eng, 'host', { type: 'setConfig', patch: { shuffleBoard: true } });
+  ok(real.handled && real.result.ok, 'a real patch still works');
+  ok(eng.config.shuffleBoard === true, 'and took effect');
 }
 
 // ===========================================================================

@@ -222,7 +222,11 @@ body {
   transition: border-color 0.15s, background 0.15s;
 }
 .code-card:hover { border-color: var(--accent); background: var(--surface-2); }
-.code-label { font-family: var(--mono); font-size: 11px; letter-spacing: 0.2em; color: var(--muted); }
+.code-label {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.2em; color: var(--muted);
+  /* Holds the label and the transport badge on one line. */
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+}
 .code-value {
   font-family: var(--mono);
   font-weight: 700;
@@ -848,6 +852,54 @@ body {
 .game-row-busy { opacity: 0.55; cursor: not-allowed; }
 .game-row-busy:hover { border-color: var(--border); background: var(--surface); }
 .game-row-busy .game-code, .game-row-busy .game-go { color: var(--muted); }
+
+/* A game on the server sits in the same list shape as a Wi-Fi game — the player is
+   picking a game, not a transport — but earns a left edge so the two groups stay
+   tellable apart after scrolling past the heading. */
+.game-row-online { border-left: 3px solid var(--accent); }
+
+/* --- The optional server (home + join screens) ---------------------------
+   Everything here renders only when js/config.js names a server AND its /health
+   probe answered. With no server configured these rules match nothing at all. */
+.server-option { display: flex; flex-direction: column; gap: 8px; }
+.btn-wide { width: 100%; }
+/* flex-start, not center: these notes wrap to two lines on a phone, and a centred
+   dot would then float in the gutter between them instead of marking the start. */
+.server-note {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin: 0;
+}
+/* A status light: cheaper to read at a glance than a sentence, and it carries no
+   meaning on its own — the sentence beside it always says the same thing in words,
+   so colour is never the only channel. The margin drops it onto the optical centre
+   of the first line of text. */
+.dot {
+  flex: 0 0 auto;
+  width: 8px; height: 8px; border-radius: 50%;
+  margin-top: 6px;
+  background: var(--muted);
+}
+.dot-on   { background: #6FCF97; box-shadow: 0 0 8px rgba(111, 207, 151, 0.65); }
+.dot-off  { background: var(--warn); }
+.dot-wait { background: var(--muted); animation: pulse-dot 1.4s ease-in-out infinite; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 1; }
+}
+
+/* Which transport this room is on, printed on the card that hands out the code.
+   The flex that lines this up with the label lives on .code-label itself. */
+.code-mode {
+  font-size: 10px; letter-spacing: 0.14em;
+  padding: 2px 7px; border-radius: 999px;
+  color: var(--muted); border: 1px solid var(--border-soft);
+}
+.code-mode-online { color: var(--accent); border-color: var(--border); background: var(--accent-dim); }
+
+@media (prefers-reduced-motion: reduce) {
+  .dot-wait { animation: none; opacity: 0.7; }
+}
 
 /* --- Rules overlay ------------------------------------------------------ */
 .rules-overlay {

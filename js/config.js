@@ -1,26 +1,48 @@
 // ============================================================================
-// config.js — Placeholder for the optional authoritative-server endpoint.
+// config.js — Where the optional authoritative server lives.
 //
-// This build is pure peer-to-peer: one player hosts from their browser tab and
-// everyone else connects over the local network. There is no server, so both
-// values below are empty and nothing imports this file yet.
+// THIS FILE IS THE ONLY THING THAT MAKES SERVER MODE EXIST. Blank both URLs and
+// the app is exactly what it always was: a static peer-to-peer game with no
+// backend. That is not a fallback path bolted on afterwards — it is the default,
+// it is what runs on a plane, and every piece of server UI is gated behind a live
+// health probe so a server that is missing, off or unreachable simply isn't
+// offered. See app.server in js/main.js.
 //
-// It exists as the documented seam for later. To give the game an online mode,
-// follow Part E of the game-server platform playbook: stand up `server/`,
-// point SERVER_URL at it (the TRAILING SLASH IS REQUIRED — the reverse proxy
-// strips the `/sequence` prefix, so the upgrade must land on `/sequence/`), add
-// a `serverTransport` to js/net.js, and gate every piece of server UI behind the
-// boot health probe. The peer-to-peer path must keep working untouched when the
-// server is unreachable.
+// ----------------------------------------------------------------------------
+// THE TRAILING SLASH ON SERVER_URL IS LOAD-BEARING.
 //
-//   SERVER_URL    — e.g. 'wss://<host>/sequence/'
-//   SERVER_HEALTH — e.g. 'https://<host>/sequence/health'
+// Caddy routes with `handle_path /sequence/*`, which matches `/sequence/` and
+// everything under it — but NOT a bare `/sequence`. A WebSocket upgrade to
+// `wss://host/sequence` therefore reaches the reverse proxy's fallback rather than
+// the game server, and the symptom is a socket that opens and closes with no
+// error worth reading. Don't tidy the slash away.
+// ----------------------------------------------------------------------------
+//
+// The host below is a Tailscale Funnel address: it terminates TLS with a real
+// certificate and is reachable from the public internet, which is why wss:// and
+// https:// are correct here and why the server keeps an origin allowlist. The
+// client is served from GitHub Pages, so that origin must appear in the server's
+// ALLOWED_ORIGINS or every handshake is refused with a 403.
 // ============================================================================
 
-export const SERVER_URL    = '';
-export const SERVER_HEALTH = '';
+const HOST = 'pi.tail360216.ts.net';
+const PREFIX = '/sequence';
 
-/** True when a server endpoint is configured at all. */
+/** WebSocket endpoint. TRAILING SLASH REQUIRED — see above. */
+export const SERVER_URL = `wss://${HOST}${PREFIX}/`;
+
+/** Cheap liveness probe. sw.js deliberately never caches a path ending /health,
+ *  so this always asks the network and a cached "yes" can never strand the app in
+ *  server mode while the Pi is off. */
+export const SERVER_HEALTH = `https://${HOST}${PREFIX}/health`;
+
+/** Open lobbies on the server, so a player can find a game without being told the
+ *  code. The server can turn this off (ROOMS_LIST=0); a 404 here is treated as
+ *  "no list available" rather than as an error. */
+export const SERVER_ROOMS = `https://${HOST}${PREFIX}/rooms`;
+
+/** True when a server endpoint is configured at all. Everything server-shaped in
+ *  the UI checks this first, then the health probe. */
 export function serverConfigured() {
   return !!(SERVER_URL && SERVER_HEALTH);
 }

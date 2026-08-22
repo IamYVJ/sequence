@@ -6,3 +6,13 @@ node_modules/
 .env
 .env.*
 GAME-SERVER-PLATFORM.md
+
+# Private deployment notes for one specific Pi — the public README documents
+# server mode generically, so this only holds host names and management-plane
+# detail that has no business in a public repo.
+DEPLOY-PI.md
+
+# A cross-repo playbook, not documentation for this game. It describes work to be
+# applied to the sibling party-game repos, so it travels between working copies
+# rather than shipping with any one of them. Delete this line to publish it.
+P2P-HARDENING.md
